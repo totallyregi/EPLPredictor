@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const appBaseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
+    const appBaseUrl = new URL(request.url).origin;
     const fixturesRes = await fetch(`${appBaseUrl}/api/fixtures`);
     if (!fixturesRes.ok) {
       return NextResponse.json(
