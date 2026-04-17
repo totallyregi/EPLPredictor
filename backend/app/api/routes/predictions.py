@@ -146,7 +146,13 @@ def predict_match(request: PredictionRequest) -> dict[str, float | str]:
     if training_df.empty:
         raise HTTPException(status_code=503, detail="Training data not available. Run data pipeline first.")
 
-    exp_home, exp_away = _estimate_expected_goals(training_df, request.home_team, request.away_team)
+    prediction_source = "weighted_poisson"
+    try:
+        exp_home, exp_away = _estimate_expected_goals(training_df, request.home_team, request.away_team)
+    except Exception:  # noqa: BLE001
+        # Degrade gracefully instead of returning 500 so frontend can still show predictions.
+        exp_home, exp_away = 1.45, 1.15
+        prediction_source = "weighted_poisson_degraded"
     max_goals = 5
 
     home_win = 0.0
@@ -189,6 +195,7 @@ def predict_match(request: PredictionRequest) -> dict[str, float | str]:
         "expected_away_goals": round(exp_away, 2),
         "predicted_score": f"{best_score[0]}-{best_score[1]}",
         "predicted": predicted,
+        "prediction_source": prediction_source,
         "match_odds": {
             "home_win": round(home_win, 4),
             "draw": round(draw, 4),
