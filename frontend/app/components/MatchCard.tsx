@@ -1,5 +1,7 @@
 'use client';
 
+import TeamBadge from './TeamBadge';
+
 interface Fixture {
   date: string;
   home: string;
@@ -9,6 +11,10 @@ interface Fixture {
   draw_prob?: number;
   away_win_prob?: number;
   predicted?: string;
+  predicted_score?: string;
+  expected_home_goals?: number;
+  expected_away_goals?: number;
+  prediction_source?: string;
 }
 
 interface MatchCardProps {
@@ -18,62 +24,97 @@ interface MatchCardProps {
 export default function MatchCard({ fixture }: MatchCardProps) {
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { 
-      weekday: 'short', 
-      year: 'numeric', 
-      month: 'short', 
-      day: 'numeric' 
+    return date.toLocaleDateString('en-US', {
+      weekday: 'short',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
     });
   };
 
-  const formatProbability = (prob: number | undefined) => {
-    if (prob === undefined) return 'N/A';
-    return `${(prob * 100).toFixed(1)}%`;
-  };
+  const probabilityRows = [
+    { label: fixture.home, value: fixture.home_win_prob ?? 0, tone: 'home', team: fixture.home },
+    { label: 'Draw', value: fixture.draw_prob ?? 0, tone: 'draw' },
+    { label: fixture.away, value: fixture.away_win_prob ?? 0, tone: 'away', team: fixture.away }
+  ];
+
+  const formatPercent = (value: number) => `${(value * 100).toFixed(1)}%`;
+
+  const confidence = Math.max(fixture.home_win_prob ?? 0, fixture.draw_prob ?? 0, fixture.away_win_prob ?? 0);
+  const predictedScore = fixture.predicted_score || 'N/A';
+
+  const expectedGoals =
+    fixture.expected_home_goals !== undefined && fixture.expected_away_goals !== undefined
+      ? `${fixture.expected_home_goals.toFixed(2)} - ${fixture.expected_away_goals.toFixed(2)} xG`
+      : 'N/A';
+
+  const predictionLabel = fixture.predicted || 'Prediction unavailable';
+  const predictionSubtitle =
+    fixture.prediction_source === 'fallback'
+      ? 'Estimated from fallback model'
+      : 'Generated from backend model';
 
   return (
-    <div className="match-card">
-      <div className="match-header">
-        <div className="teams">
-          <span className="team">{fixture.home}</span>
-          <span className="vs">vs</span>
-          <span className="team">{fixture.away}</span>
+    <article className="match-card">
+      <div className="match-card-top">
+        <div>
+          <div className="match-teams">
+            <span className="match-team-with-badge">
+              <TeamBadge team={fixture.home} />
+              <span>{fixture.home}</span>
+            </span>
+            <span className="match-vs">vs</span>
+            <span className="match-team-with-badge">
+              <TeamBadge team={fixture.away} />
+              <span>{fixture.away}</span>
+            </span>
+          </div>
+          <p className="match-meta">
+            {formatDate(fixture.date)}
+            {fixture.time ? ` • ${fixture.time}` : ''}
+          </p>
         </div>
-        <div className="match-date">
-          {formatDate(fixture.date)}
-          {fixture.time && ` • ${fixture.time}`}
+        <div className="prediction-pill">
+          <span className="prediction-pill-label">{predictionLabel}</span>
+          <span className="prediction-pill-confidence">{formatPercent(confidence)} confidence</span>
         </div>
       </div>
 
-      {fixture.predicted && (
-        <div className="prediction">
-          <div className="prediction-label">Prediction Probabilities:</div>
-          <div className="probabilities">
-            <div className="prob-item">
-              <div className="prob-label">Home Win</div>
-              <div className="prob-value">
-                {formatProbability(fixture.home_win_prob)}
-              </div>
-            </div>
-            <div className="prob-item">
-              <div className="prob-label">Draw</div>
-              <div className="prob-value">
-                {formatProbability(fixture.draw_prob)}
-              </div>
-            </div>
-            <div className="prob-item">
-              <div className="prob-label">Away Win</div>
-              <div className="prob-value">
-                {formatProbability(fixture.away_win_prob)}
-              </div>
-            </div>
-          </div>
-          <div className="predicted-outcome">
-            Predicted: {fixture.predicted}
-          </div>
+      <div className="score-strip">
+        <div className="score-item">
+          <p className="score-item-label">Predicted Score</p>
+          <p className="score-item-value">{predictedScore}</p>
         </div>
-      )}
-    </div>
+        <div className="score-item">
+          <p className="score-item-label">Expected Goals</p>
+          <p className="score-item-value">{expectedGoals}</p>
+        </div>
+        <div className="score-item">
+          <p className="score-item-label">Model Source</p>
+          <p className="score-item-value">{predictionSubtitle}</p>
+        </div>
+      </div>
+
+      <div className="probability-block">
+        {probabilityRows.map((row) => (
+          <div className="probability-row" key={row.label}>
+            <div className="probability-row-head">
+              <span className="probability-row-label">
+                {'team' in row && row.team ? <TeamBadge team={row.team} compact /> : null}
+                <span>{row.label}</span>
+              </span>
+              <span className="probability-row-value">{formatPercent(row.value)}</span>
+            </div>
+            <div className="probability-track">
+              <div
+                className={`probability-fill ${row.tone}`}
+                style={{ width: `${Math.max(0, Math.min(100, row.value * 100))}%` }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </article>
   );
 }
 

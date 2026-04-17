@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
 import requests
@@ -58,9 +58,35 @@ class FootballDataClient:
         )
         return payload.get("matches", [])
 
+    def fetch_matches_for_season(self, season_start_year: int, competition: str = "PL") -> list[dict[str, Any]]:
+        """Fetch all matches for a specific EPL season start year."""
+        payload = self._get(
+            f"competitions/{competition}/matches",
+            params={"season": season_start_year},
+        )
+        return payload.get("matches", [])
+
     def fetch_last_n_years(self, years: int = 5, competition: str = "PL") -> list[dict[str, Any]]:
-        """Fetch completed and scheduled EPL matches over the last N years."""
+        """Fetch last N EPL seasons using season-based API calls."""
+        if years <= 0:
+            return []
+
         today = date.today()
-        start_date = today - timedelta(days=365 * years)
-        return self.fetch_matches(start_date, today + timedelta(days=30), competition=competition)
+        current_season_start = today.year if today.month >= 8 else today.year - 1
+        season_start_years = range(current_season_start - years + 1, current_season_start + 1)
+
+        collected_matches: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+
+        for season_start_year in season_start_years:
+            matches = self.fetch_matches_for_season(season_start_year, competition=competition)
+            for match in matches:
+                match_id = match.get("id")
+                if isinstance(match_id, int) and match_id in seen_ids:
+                    continue
+                if isinstance(match_id, int):
+                    seen_ids.add(match_id)
+                collected_matches.append(match)
+
+        return collected_matches
 
