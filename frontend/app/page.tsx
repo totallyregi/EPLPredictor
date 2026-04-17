@@ -18,6 +18,11 @@ interface Fixture {
   expected_home_goals?: number;
   expected_away_goals?: number;
   prediction_source?: string;
+  match_odds?: {
+    home_win: number;
+    draw: number;
+    away_win: number;
+  };
 }
 
 interface HistoryMatch {

@@ -17,6 +17,11 @@ interface Fixture {
   expected_home_goals?: number;
   expected_away_goals?: number;
   prediction_source?: string;
+  match_odds?: {
+    home_win: number;
+    draw: number;
+    away_win: number;
+  };
 }
 
 interface MatchCardProps {
@@ -34,15 +39,19 @@ export default function MatchCard({ fixture }: MatchCardProps) {
     });
   };
 
+  const homeWin = fixture.match_odds?.home_win ?? fixture.home_win_prob ?? 0;
+  const draw = fixture.match_odds?.draw ?? fixture.draw_prob ?? 0;
+  const awayWin = fixture.match_odds?.away_win ?? fixture.away_win_prob ?? 0;
+
   const probabilityRows = [
-    { label: fixture.home, value: fixture.home_win_prob ?? 0, tone: 'home', team: fixture.home, crest: fixture.home_crest },
-    { label: 'Draw', value: fixture.draw_prob ?? 0, tone: 'draw' },
-    { label: fixture.away, value: fixture.away_win_prob ?? 0, tone: 'away', team: fixture.away, crest: fixture.away_crest }
+    { label: fixture.home, value: homeWin, tone: 'home', team: fixture.home, crest: fixture.home_crest },
+    { label: 'Draw', value: draw, tone: 'draw' },
+    { label: fixture.away, value: awayWin, tone: 'away', team: fixture.away, crest: fixture.away_crest }
   ];
 
   const formatPercent = (value: number) => `${(value * 100).toFixed(1)}%`;
 
-  const confidence = Math.max(fixture.home_win_prob ?? 0, fixture.draw_prob ?? 0, fixture.away_win_prob ?? 0);
+  const confidence = Math.max(homeWin, draw, awayWin);
   const predictedScore = fixture.predicted_score || 'N/A';
 
   const expectedGoals =

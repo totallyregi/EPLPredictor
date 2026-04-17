@@ -26,6 +26,11 @@ function fallbackPrediction(fixture: any) {
     home_win_prob: Number(normalizedHome.toFixed(4)),
     draw_prob: Number(normalizedDraw.toFixed(4)),
     away_win_prob: Number(normalizedAway.toFixed(4)),
+    match_odds: {
+      home_win: Number(normalizedHome.toFixed(4)),
+      draw: Number(normalizedDraw.toFixed(4)),
+      away_win: Number(normalizedAway.toFixed(4))
+    },
     predicted,
     predicted_score: predicted === 'Draw' ? '1-1' : predicted === 'Home Win' ? '2-1' : '1-2',
     prediction_source: 'fallback'
@@ -62,14 +67,30 @@ export async function GET(request: Request) {
             return fallbackPrediction(fixture);
           }
           const prediction = await res.json();
+          const hasMatchOdds =
+            prediction?.match_odds?.home_win !== undefined &&
+            prediction?.match_odds?.draw !== undefined &&
+            prediction?.match_odds?.away_win !== undefined;
+
+          const homeWinProb = hasMatchOdds ? prediction.match_odds.home_win : prediction?.home_win_prob;
+          const drawProb = hasMatchOdds ? prediction.match_odds.draw : prediction?.draw_prob;
+          const awayWinProb = hasMatchOdds ? prediction.match_odds.away_win : prediction?.away_win_prob;
+
           if (
-            prediction?.home_win_prob === undefined ||
-            prediction?.draw_prob === undefined ||
-            prediction?.away_win_prob === undefined
+            homeWinProb === undefined ||
+            drawProb === undefined ||
+            awayWinProb === undefined
           ) {
             return fallbackPrediction(fixture);
           }
-          return { ...fixture, ...prediction };
+
+          return {
+            ...fixture,
+            ...prediction,
+            home_win_prob: homeWinProb,
+            draw_prob: drawProb,
+            away_win_prob: awayWinProb
+          };
         } catch (error) {
           return fallbackPrediction(fixture);
         }
