@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException
@@ -141,7 +142,7 @@ def _estimate_expected_goals(training_df: pd.DataFrame, home_team: str, away_tea
 
 
 @router.post("/predict")
-def predict_match(request: PredictionRequest) -> dict[str, float | str]:
+def predict_match(request: PredictionRequest) -> dict[str, Any]:
     training_df = load_processed_csv("training_matches.csv")
     if training_df.empty:
         raise HTTPException(status_code=503, detail="Training data not available. Run data pipeline first.")
