@@ -13,6 +13,7 @@ class Settings:
     app_version: str = "0.1.0"
     football_data_base_url: str = os.getenv("FOOTBALL_DATA_BASE_URL", "https://api.football-data.org/v4")
     football_data_api_key: str | None = os.getenv("FOOTBALL_DATA_API_KEY")
+    refresh_api_token: str | None = os.getenv("REFRESH_API_TOKEN")
     seasons_to_fetch: int = int(os.getenv("EPL_SEASONS_TO_FETCH", "5"))
     project_root: Path = Path(__file__).resolve().parents[2]
     data_dir: Path = project_root / "data"

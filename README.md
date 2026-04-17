@@ -91,9 +91,11 @@ uvicorn backend.app.main:app --reload --port 8000
 
 Available backend endpoints:
 - `GET /health`
-- `GET /api/fixtures/week`
+- `GET /api/fixtures/week` (live API fixtures from today to season end)
+- `GET /api/fixtures/season` (alias)
 - `POST /api/predict`
 - `GET /api/history?years=5`
+- `POST /api/admin/refresh-data` (protected refresh endpoint)
 
 ### 3) Run Next.js Frontend
 
@@ -108,6 +110,21 @@ Frontend API routes:
 - `POST /api/predict` (proxies to backend prediction)
 - `GET /api/predictions` (batches fixture predictions)
 - `GET /api/history` (proxies to backend history)
+
+### Refresh processed data (manual or scheduled)
+
+Set `REFRESH_API_TOKEN` on backend, then call:
+
+```bash
+curl -X POST "https://<your-backend-domain>/api/admin/refresh-data" \
+  -H "Content-Type: application/json" \
+  -H "x-refresh-token: <your-refresh-token>" \
+  -d '{"seasons": 5, "force_refresh": true}'
+```
+
+This regenerates:
+- `data/processed/historical_matches.csv`
+- `data/processed/training_matches.csv`
 
 ### Command-Line Interface
 

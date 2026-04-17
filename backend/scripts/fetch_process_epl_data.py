@@ -53,12 +53,12 @@ def _write_custom_outputs(output_dir: Path, historical_csv: str, training_csv: s
     )
 
 
-def main() -> None:
-    args = parse_args()
+def run_pipeline(seasons: int = 5, output_dir: str | None = None, force_refresh: bool = False) -> dict:
+    """Fetch API data and regenerate processed datasets."""
     client = FootballDataClient()
 
-    raw_matches = client.fetch_last_n_years(years=args.seasons)
-    raw_matches = _filter_date_window(raw_matches, args.seasons)
+    raw_matches = client.fetch_last_n_years(years=seasons)
+    raw_matches = _filter_date_window(raw_matches, seasons)
 
     raw_file = save_raw_json(raw_matches, "football_data_raw_matches.json")
     normalized = normalize_matches(raw_matches)
@@ -68,28 +68,33 @@ def main() -> None:
     historical_path = save_processed_csv(processed.historical_df, "historical_matches.csv")
     training_path = save_processed_csv(processed.training_df, "training_matches.csv")
 
-    if args.output_dir:
+    if output_dir:
         _write_custom_outputs(
-            Path(args.output_dir),
+            Path(output_dir),
             str(historical_path),
             str(training_path),
             str(raw_file),
         )
 
-    print(
-        json.dumps(
-            {
-                "rows_raw": len(raw_matches),
-                "rows_historical": len(processed.historical_df),
-                "rows_training": len(processed.training_df),
-                "historical_csv": str(historical_path),
-                "training_csv": str(training_path),
-                "raw_json": str(raw_file),
-                "force_refresh": args.force_refresh,
-            },
-            indent=2,
-        )
+    return {
+        "rows_raw": len(raw_matches),
+        "rows_historical": len(processed.historical_df),
+        "rows_training": len(processed.training_df),
+        "historical_csv": str(historical_path),
+        "training_csv": str(training_path),
+        "raw_json": str(raw_file),
+        "force_refresh": force_refresh,
+    }
+
+
+def main() -> None:
+    args = parse_args()
+    result = run_pipeline(
+        seasons=args.seasons,
+        output_dir=args.output_dir,
+        force_refresh=args.force_refresh,
     )
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api.routes import fixtures, history, predictions
+from .api.routes import admin, fixtures, history, predictions
 from .config import ensure_data_directories, settings
 
 
@@ -26,6 +26,7 @@ def create_app() -> FastAPI:
     app.include_router(fixtures.router, prefix="/api", tags=["fixtures"])
     app.include_router(predictions.router, prefix="/api", tags=["predictions"])
     app.include_router(history.router, prefix="/api", tags=["history"])
+    app.include_router(admin.router, prefix="/api", tags=["admin"])
     return app
 
 
