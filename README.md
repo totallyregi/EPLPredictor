@@ -4,30 +4,30 @@ A machine learning system for predicting Premier League match outcomes, featurin
 
 ## Features
 
-- **Web Scraping**: Automatically scrapes match data from fbref.com
-- **Feature Engineering**: Creates rolling averages and temporal features
-- **Model Training**: Random Forest and Logistic Regression models
-- **Prediction Interface**: Predict match outcomes with probabilities
-- **CLI Tools**: Command-line interface for common operations
-- **Web Frontend**: Next.js interface for viewing fixtures and predictions (Vercel-ready)
+- **Football-Data.org Pipeline**: Pull and process 5 years of EPL match data from API
+- **Feature Engineering**: Recent form, head-to-head edge, home advantage, and goal differential
+- **Prediction API**: FastAPI endpoint with Poisson-based probabilities and expected scoreline
+- **Historical API**: FastAPI endpoint serving processed 5-year history table
+- **Frontend Bridge**: Next.js API routes proxy to backend for fixtures, predictions, and history
 
 ## Project Structure
 
 ```
 EPLPredictor/
-├── src/
-│   ├── scraping.py          # Web scraping logic
-│   ├── features.py          # Feature engineering pipeline
-│   ├── model.py             # Model training and evaluation
-│   ├── predict.py           # Prediction interface
-│   └── cli.py               # Command-line interface
-├── notebooks/
-│   ├── scraping.ipynb       # Scraping demo
-│   └── prediction.ipynb     # Training and prediction demo
+├── backend/
+│   ├── app/
+│   │   ├── api/routes/      # FastAPI routes (fixtures, predict, history)
+│   │   ├── data/            # Football-Data client + processing logic
+│   │   ├── config.py        # Env + path settings
+│   │   └── main.py          # FastAPI app entrypoint
+│   └── scripts/
+│       └── fetch_process_epl_data.py
+├── frontend/                # Next.js dashboard app
+├── src/                     # Legacy model/feature modules (kept for compatibility)
 ├── data/
-│   ├── raw/                 # Raw scraped data
-│   └── processed/           # Processed matches
-├── models/                  # Saved model files
+│   ├── raw/                 # Raw API payload snapshots
+│   └── processed/           # historical_matches.csv, training_matches.csv
+├── models/
 └── requirements.txt
 ```
 
@@ -50,7 +50,64 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+## Environment Variables
+
+Copy `.env.example` to `.env` and fill values:
+
+```bash
+cp .env.example .env
+```
+
+Required:
+
+- `FOOTBALL_DATA_API_KEY`: API key from Football-Data.org
+- `BACKEND_API_URL`: URL the Next.js routes use to reach FastAPI (default `http://localhost:8000`)
+- `NEXT_PUBLIC_BASE_URL`: Base URL for frontend app self-calls (default `http://localhost:3000`)
+
 ## Usage
+
+### 1) Fetch + Process EPL Data (5 years)
+
+```bash
+python -m backend.scripts.fetch_process_epl_data --seasons 5
+```
+
+Optional:
+
+```bash
+python -m backend.scripts.fetch_process_epl_data --seasons 5 --output-dir data/exports --force-refresh
+```
+
+This writes:
+- `data/raw/football_data_raw_matches.json`
+- `data/processed/historical_matches.csv`
+- `data/processed/training_matches.csv`
+
+### 2) Run FastAPI Backend
+
+```bash
+uvicorn backend.app.main:app --reload --port 8000
+```
+
+Available backend endpoints:
+- `GET /health`
+- `GET /api/fixtures/week`
+- `POST /api/predict`
+- `GET /api/history?years=5`
+
+### 3) Run Next.js Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend API routes:
+- `GET /api/fixtures` (proxies to backend fixtures)
+- `POST /api/predict` (proxies to backend prediction)
+- `GET /api/predictions` (batches fixture predictions)
+- `GET /api/history` (proxies to backend history)
 
 ### Command-Line Interface
 
@@ -126,13 +183,9 @@ The default Random Forest model typically achieves:
 
 Note: These metrics are for binary classification (win vs not-win). Draw predictions use heuristics.
 
-## Frontend (Next.js)
-
-The frontend interface is located in the `frontend/` directory. See the frontend README for setup and deployment instructions.
-
 ## Data Sources
 
-Match data is scraped from [fbref.com](https://fbref.com), which provides comprehensive Premier League statistics.
+Primary source is [Football-Data.org](https://www.football-data.org/) via REST API.
 
 ## License
 

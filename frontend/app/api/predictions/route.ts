@@ -2,15 +2,20 @@ import { NextResponse } from 'next/server';
 
 export async function GET() {
   try {
-    // Fetch fixtures first
-    const fixturesRes = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/fixtures`);
+    const appBaseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
+    const fixturesRes = await fetch(`${appBaseUrl}/api/fixtures`);
+    if (!fixturesRes.ok) {
+      return NextResponse.json(
+        { error: 'Failed to load fixtures for predictions' },
+        { status: fixturesRes.status }
+      );
+    }
     const { fixtures } = await fixturesRes.json();
 
-    // Generate predictions for all fixtures
     const predictions = await Promise.all(
       fixtures.map(async (fixture: any) => {
         try {
-          const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/predict`, {
+          const res = await fetch(`${appBaseUrl}/api/predict`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -22,7 +27,15 @@ export async function GET() {
           const prediction = await res.json();
           return { ...fixture, ...prediction };
         } catch (error) {
-          return { ...fixture, error: 'Prediction failed' };
+          return {
+            ...fixture,
+            home_win_prob: 0.34,
+            draw_prob: 0.33,
+            away_win_prob: 0.33,
+            predicted: 'Unavailable',
+            predicted_score: 'N/A',
+            error: 'Prediction failed'
+          };
         }
       })
     );
