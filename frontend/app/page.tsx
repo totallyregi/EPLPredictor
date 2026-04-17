@@ -7,6 +7,8 @@ interface Fixture {
   date: string;
   home: string;
   away: string;
+  home_crest?: string;
+  away_crest?: string;
   time?: string;
   home_win_prob?: number;
   draw_prob?: number;

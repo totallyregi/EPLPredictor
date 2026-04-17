@@ -41,12 +41,19 @@ class FootballDataClient:
                     sleep_seconds = min(2**attempt, 10)
                     time.sleep(sleep_seconds)
                     continue
+                if response.status_code in {401, 403}:
+                    raise RuntimeError(
+                        f"Auth/plan error ({response.status_code}) for {url} with params={params}"
+                    )
                 response.raise_for_status()
                 return response.json()
             except requests.RequestException as exc:
                 last_error = exc
                 if attempt < retries:
                     time.sleep(2**attempt)
+            except RuntimeError as exc:
+                last_error = exc
+                break
 
         raise RuntimeError(f"Request failed for {url}: {last_error}") from last_error
 
@@ -79,7 +86,13 @@ class FootballDataClient:
         seen_ids: set[int] = set()
 
         for season_start_year in season_start_years:
-            matches = self.fetch_matches_for_season(season_start_year, competition=competition)
+            try:
+                matches = self.fetch_matches_for_season(season_start_year, competition=competition)
+            except RuntimeError as exc:
+                if "Auth/plan error (403)" in str(exc):
+                    # Some Football-Data plans do not include older seasons.
+                    continue
+                raise
             for match in matches:
                 match_id = match.get("id")
                 if isinstance(match_id, int) and match_id in seen_ids:
@@ -88,5 +101,9 @@ class FootballDataClient:
                     seen_ids.add(match_id)
                 collected_matches.append(match)
 
+        if not collected_matches:
+            raise RuntimeError(
+                "No season data could be fetched. Check Football-Data plan scope or API key permissions."
+            )
         return collected_matches
 

@@ -7,7 +7,6 @@ from datetime import date
 from fastapi import APIRouter
 
 from ...data.football_data_client import FootballDataClient
-from ...data.processing import normalize_matches
 
 router = APIRouter()
 
@@ -32,19 +31,31 @@ def _fixtures_from_live_api() -> list[dict]:
 
     start_date, end_date = _season_window_today_to_end()
     matches = client.fetch_matches(start_date, end_date, competition="PL")
-    normalized = normalize_matches(matches)
-    if normalized.empty:
-        return []
+    fixtures: list[dict] = []
+    for match in matches:
+        status = match.get("status")
+        if status not in {"TIMED", "SCHEDULED"}:
+            continue
 
-    fixtures = normalized[
-        normalized["status"].isin(["TIMED", "SCHEDULED"])
-    ][["date", "home_team", "away_team", "status"]].copy()
-    if fixtures.empty:
-        return []
+        utc_date = match.get("utcDate")
+        home_team = match.get("homeTeam") or {}
+        away_team = match.get("awayTeam") or {}
+        if not utc_date or not home_team.get("name") or not away_team.get("name"):
+            continue
 
-    fixtures = fixtures.rename(columns={"home_team": "home", "away_team": "away"})
-    fixtures["date"] = fixtures["date"].dt.strftime("%Y-%m-%d")
-    return fixtures.to_dict(orient="records")
+        fixtures.append(
+            {
+                "date": utc_date[:10],
+                "home": home_team.get("name"),
+                "away": away_team.get("name"),
+                "home_crest": home_team.get("crest"),
+                "away_crest": away_team.get("crest"),
+                "status": status,
+            }
+        )
+
+    fixtures.sort(key=lambda row: row["date"])
+    return fixtures
 
 
 @router.get("/fixtures/week")

@@ -1,5 +1,7 @@
 'use client';
 
+import { useMemo, useState } from 'react';
+
 const TEAM_COLOR_MAP: Record<string, string> = {
   Arsenal: 'badge-red',
   'Aston Villa': 'badge-claret',
@@ -68,17 +70,36 @@ function getTeamInitials(team: string): string {
 
 interface TeamBadgeProps {
   team: string;
+  crestUrl?: string;
   compact?: boolean;
 }
 
-export default function TeamBadge({ team, compact = false }: TeamBadgeProps) {
+export default function TeamBadge({ team, crestUrl, compact = false }: TeamBadgeProps) {
   const normalized = normalizeTeamName(team);
   const themeClass = TEAM_COLOR_MAP[normalized] || 'badge-neutral';
   const initials = getTeamInitials(normalized);
+  const [imgFailed, setImgFailed] = useState(false);
+
+  const shouldShowImage = useMemo(() => {
+    if (!crestUrl || imgFailed) {
+      return false;
+    }
+    return crestUrl.startsWith('http://') || crestUrl.startsWith('https://');
+  }, [crestUrl, imgFailed]);
 
   return (
     <span className={`team-badge ${themeClass} ${compact ? 'compact' : ''}`} aria-label={normalized}>
-      <span className="team-badge-initials">{initials}</span>
+      {shouldShowImage ? (
+        <img
+          src={crestUrl}
+          alt={`${normalized} badge`}
+          className="team-badge-image"
+          loading="lazy"
+          onError={() => setImgFailed(true)}
+        />
+      ) : (
+        <span className="team-badge-initials">{initials}</span>
+      )}
     </span>
   );
 }

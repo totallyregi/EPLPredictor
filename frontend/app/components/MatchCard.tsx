@@ -6,6 +6,8 @@ interface Fixture {
   date: string;
   home: string;
   away: string;
+  home_crest?: string;
+  away_crest?: string;
   time?: string;
   home_win_prob?: number;
   draw_prob?: number;
@@ -33,9 +35,9 @@ export default function MatchCard({ fixture }: MatchCardProps) {
   };
 
   const probabilityRows = [
-    { label: fixture.home, value: fixture.home_win_prob ?? 0, tone: 'home', team: fixture.home },
+    { label: fixture.home, value: fixture.home_win_prob ?? 0, tone: 'home', team: fixture.home, crest: fixture.home_crest },
     { label: 'Draw', value: fixture.draw_prob ?? 0, tone: 'draw' },
-    { label: fixture.away, value: fixture.away_win_prob ?? 0, tone: 'away', team: fixture.away }
+    { label: fixture.away, value: fixture.away_win_prob ?? 0, tone: 'away', team: fixture.away, crest: fixture.away_crest }
   ];
 
   const formatPercent = (value: number) => `${(value * 100).toFixed(1)}%`;
@@ -60,12 +62,12 @@ export default function MatchCard({ fixture }: MatchCardProps) {
         <div>
           <div className="match-teams">
             <span className="match-team-with-badge">
-              <TeamBadge team={fixture.home} />
+              <TeamBadge team={fixture.home} crestUrl={fixture.home_crest} />
               <span>{fixture.home}</span>
             </span>
             <span className="match-vs">vs</span>
             <span className="match-team-with-badge">
-              <TeamBadge team={fixture.away} />
+              <TeamBadge team={fixture.away} crestUrl={fixture.away_crest} />
               <span>{fixture.away}</span>
             </span>
           </div>
@@ -100,7 +102,7 @@ export default function MatchCard({ fixture }: MatchCardProps) {
           <div className="probability-row" key={row.label}>
             <div className="probability-row-head">
               <span className="probability-row-label">
-                {'team' in row && row.team ? <TeamBadge team={row.team} compact /> : null}
+                {'team' in row && row.team ? <TeamBadge team={row.team} crestUrl={'crest' in row ? row.crest : undefined} compact /> : null}
                 <span>{row.label}</span>
               </span>
               <span className="probability-row-value">{formatPercent(row.value)}</span>

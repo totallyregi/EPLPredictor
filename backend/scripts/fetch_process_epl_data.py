@@ -7,6 +7,7 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
+from backend.app.config import settings
 from backend.app.data.football_data_client import FootballDataClient
 from backend.app.data.processing import add_features, normalize_matches, validate_schema
 from backend.app.data.storage import save_processed_csv, save_raw_json
@@ -14,7 +15,12 @@ from backend.app.data.storage import save_processed_csv, save_raw_json
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fetch and process EPL data.")
-    parser.add_argument("--seasons", type=int, default=5, help="Number of years of EPL data to fetch.")
+    parser.add_argument(
+        "--seasons",
+        type=int,
+        default=settings.seasons_to_fetch,
+        help="Number of years of EPL data to fetch.",
+    )
     parser.add_argument(
         "--output-dir",
         type=str,
@@ -53,7 +59,7 @@ def _write_custom_outputs(output_dir: Path, historical_csv: str, training_csv: s
     )
 
 
-def run_pipeline(seasons: int = 5, output_dir: str | None = None, force_refresh: bool = False) -> dict:
+def run_pipeline(seasons: int = settings.seasons_to_fetch, output_dir: str | None = None, force_refresh: bool = False) -> dict:
     """Fetch API data and regenerate processed datasets."""
     client = FootballDataClient()
 

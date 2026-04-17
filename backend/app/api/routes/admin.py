@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 class RefreshRequest(BaseModel):
-    seasons: int = 5
+    seasons: int = settings.seasons_to_fetch
     force_refresh: bool = True
 
 
