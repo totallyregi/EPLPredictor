@@ -18,6 +18,8 @@ export interface Prediction {
   both_teams_score_prob: number;
   over_2_5_prob: number;
   score_matrix: number[][];
+  most_likely_score?: string;
+  draw_alert?: boolean;
 }
 
 export interface TableRow {

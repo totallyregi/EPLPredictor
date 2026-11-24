@@ -140,6 +140,7 @@ export default function Insights({ model, table, track, results }: { model: Mode
           <li><b>Live data.</b> {model.seasons.length} seasons of results ({model.trained_on_matches.toLocaleString()} matches) pulled from Football-Data.org and refreshed every 3 hours.</li>
           <li><b>Team ratings.</b> Each side gets attack and defence strengths, adjusted for the quality of opponents faced and weighted toward recent games (240-day half-life). Promoted teams start from a weaker prior.</li>
           <li><b>Scorelines.</b> Ratings plus a data-driven home advantage give expected goals, which feed a Poisson model with a Dixon-Coles correction so 0–0 and 1–1 draws aren't underrated.</li>
+          <li><b>Calling the result.</b> The pick is the likeliest outcome, but a draw is called whenever it&apos;s within 5 points of the favourite, because draws are rarely the single likeliest result even at 30%. Matches with a 30%+ draw chance get a draw alert.</li>
           <li><b>Season.</b> The rest of the season is simulated {model.simulations.toLocaleString()} times to produce title, top-four and relegation odds.</li>
           <li><b>Tuning.</b> Recency, shrinkage and draw correction were chosen by minimising log loss on a 300-match walk-forward backtest.</li>
         </ol>

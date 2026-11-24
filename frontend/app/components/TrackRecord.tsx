@@ -341,7 +341,7 @@ export default function TrackRecord() {
                     ];
                   })}
                 </div>
-                <p className="bt-note">Green diagonal = correct. Draws are almost never the single likeliest outcome, so the model rarely calls them even when it rates a draw at 25–30%. That&apos;s where most misses come from.</p>
+                <p className="bt-note">Green diagonal = correct. A draw is called when it&apos;s within 5 points of the favourite. Calling more draws than that was tested and lowered accuracy: even well-rated draws only land about 30% of the time.</p>
               </div>
 
               <div className="glass card-pad">

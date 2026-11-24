@@ -63,7 +63,7 @@ export default function Hero({ match, model, form, onOpen }: { match: Prediction
           </div>
           <ProbRing
             h={match.home_win_prob} d={match.draw_prob} a={match.away_win_prob} size={190}
-            label={<><span className="ring-score">{match.predicted_score.replace('-', '–')}</span><span className="ring-sub">predicted</span><span className="ring-draw">Draw {pct(match.draw_prob)}</span></>}
+            label={<><span className="ring-score">{match.predicted_score.replace('-', '–')}</span><span className="ring-sub">{fav === 'Draw' ? 'draw call' : 'predicted'}</span><span className="ring-draw">Draw {pct(match.draw_prob)}</span></>}
           />
           <div className={`ft-team ${fav === 'Away Win' ? 'fav' : ''}`}>
             <motion.div animate={{ y: [0, -6, 0] }} transition={{ duration: 4, delay: 2, repeat: Infinity, ease: 'easeInOut' }}>

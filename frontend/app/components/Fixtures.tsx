@@ -8,9 +8,11 @@ import Crest from './Crest';
 import { FormChips, ProbBar, ScoreHeatmap } from './Viz';
 
 function verdict(p: Prediction) {
+  if (p.predicted === 'Draw') return 'draw';
   const c = Math.max(p.home_win_prob, p.draw_prob, p.away_win_prob);
   return c >= 0.6 ? 'strong' : c >= 0.45 ? 'lean' : 'tossup';
 }
+const VERDICT_LABEL: Record<string, string> = { draw: 'Draw call', strong: 'Strong pick', lean: 'Lean', tossup: 'Toss-up' };
 
 function MatchRow({ m, form, open, onToggle, index }: { m: Prediction; form: Record<string, FormEntry[]>; open: boolean; onToggle: () => void; index: number }) {
   const v = verdict(m);
@@ -32,7 +34,8 @@ function MatchRow({ m, form, open, onToggle, index }: { m: Prediction; form: Rec
         </span>
         <span className="mid">
           <span className="pscore">{m.predicted_score.replace('-', ' – ')}</span>
-          <span className={`tag ${v}`}>{v === 'strong' ? 'Strong pick' : v === 'lean' ? 'Lean' : 'Toss-up'}</span>
+          <span className={`tag ${v}`}>{VERDICT_LABEL[v]}</span>
+          {m.draw_alert && <span className="tag draw-alert" title={`Draw is ${pct(m.draw_prob)} likely`}>Draw alert {pct(m.draw_prob)}</span>}
         </span>
         <span className={`side a ${m.predicted === 'Away Win' ? 'fav' : ''}`}>
           <Crest src={m.away_crest} name={m.away} size={38} />
@@ -48,7 +51,8 @@ function MatchRow({ m, form, open, onToggle, index }: { m: Prediction; form: Rec
               <ScoreHeatmap matrix={m.score_matrix} homeLabel={m.home_short} awayLabel={m.away_short} highlight={m.predicted_score} />
               <div className="markets">
                 <div className="mk"><span>Expected goals</span><b>{m.expected_home_goals.toFixed(2)} – {m.expected_away_goals.toFixed(2)}</b></div>
-                <div className="mk"><span>Likeliest scores</span><b>{m.top_scores.map((s) => `${s.score} ${pct(s.prob)}`).join('  ·  ')}</b></div>
+                <div className="mk"><span>Single likeliest score</span><b>{m.most_likely_score ?? m.top_scores[0]?.score} ({pct(m.top_scores[0]?.prob ?? 0)})</b></div>
+                <div className="mk"><span>Top three scores</span><b>{m.top_scores.map((s) => `${s.score} ${pct(s.prob)}`).join('  ·  ')}</b></div>
                 <div className="mk"><span>Both teams score</span><b>{pct(m.both_teams_score_prob)}</b><i style={{ width: pct(m.both_teams_score_prob) }} /></div>
                 <div className="mk"><span>Over 2.5 goals</span><b>{pct(m.over_2_5_prob)}</b><i style={{ width: pct(m.over_2_5_prob) }} /></div>
                 <div className="mk"><span>Win · Draw · Win</span><b>{pct(m.home_win_prob, 1)} · {pct(m.draw_prob, 1)} · {pct(m.away_win_prob, 1)}</b></div>
@@ -106,6 +110,7 @@ export default function Fixtures({ predictions, form, focusId }: { predictions: 
 
       <div className="legend">
         <span><i className="home" />Home win</span><span><i className="draw" />Draw</span><span><i className="away" />Away win</span>
+        <span><i className="alert" />Draw alert = draw 30%+ likely</span>
         <span className="legend-tip">Tap any match for the full scoreline heatmap</span>
       </div>
 

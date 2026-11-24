@@ -31,6 +31,8 @@ PRIOR_STRENGTH = 16.0               # pseudo expected-goals pulling ratings to t
 PROMOTED_PRIOR = (0.80, 1.20)       # (attack, defence weakness) for teams new to the data
 RHO = -0.20                         # Dixon-Coles low-score dependence (tuned; boosts 0-0 / 1-1)
 SIMULATIONS = 10000
+DRAW_MARGIN = 0.05                  # call a draw when it is within 5 pts of the favourite (validated per season)
+DRAW_ALERT = 0.30                   # flag matches where a draw is at least this likely
 MAX_GOALS = 10
 CACHE_FILE = "matches.csv"
 
@@ -152,6 +154,14 @@ def score_matrix(lam_home: float, lam_away: float) -> np.ndarray:
     return m / m.sum()
 
 
+def pick_outcome(home_win: float, draw: float, away_win: float) -> str:
+    """Single call for a match. Draws are rarely the single likeliest outcome even when
+    they are ~30% likely, so a draw is called when it is within DRAW_MARGIN of the favourite."""
+    if draw >= max(home_win, away_win) - DRAW_MARGIN:
+        return "Draw"
+    return "Home Win" if home_win >= away_win else "Away Win"
+
+
 def predict(model: FittedModel, home: str, away: str) -> dict[str, Any]:
     lam_h, lam_a = model.expected_goals(home, away)
     m = score_matrix(lam_h, lam_a)
@@ -159,7 +169,7 @@ def predict(model: FittedModel, home: str, away: str) -> dict[str, Any]:
     draw = float(np.trace(m))
     away_win = float(np.triu(m, 1).sum())
     probs = {"Home Win": home_win, "Draw": draw, "Away Win": away_win}
-    predicted = max(probs, key=probs.get)
+    predicted = pick_outcome(home_win, draw, away_win)
     # Most likely scoreline *consistent with* the predicted outcome (plain argmax is nearly always 1-1).
     i, j = np.indices(m.shape)
     region = {"Home Win": i > j, "Draw": i == j, "Away Win": i < j}[predicted]
@@ -176,6 +186,8 @@ def predict(model: FittedModel, home: str, away: str) -> dict[str, Any]:
         "predicted": predicted,
         "predicted_score": f"{h}-{a}",
         "top_scores": [{"score": s, "prob": round(p, 4)} for p, s in top_scores],
+        "most_likely_score": f"{int(np.unravel_index(np.argmax(m), m.shape)[0])}-{int(np.unravel_index(np.argmax(m), m.shape)[1])}",
+        "draw_alert": predicted != "Draw" and draw >= DRAW_ALERT,
         "both_teams_score_prob": round(float(m[1:, 1:].sum()), 4),
         "over_2_5_prob": round(float(sum(m[i, j] for i in range(MAX_GOALS + 1) for j in range(MAX_GOALS + 1) if i + j > 2)), 4),
         "score_matrix": [[round(float(m[r, c]), 4) for c in range(6)] for r in range(6)],
@@ -207,7 +219,7 @@ def backtest(played: pd.DataFrame, last_n: int = 300) -> dict[str, Any] | None:
             p = predict(model, row.home_team, row.away_team)
             actual = _result(row.home_goals, row.away_goals)
             probs = {"H": p["home_win_prob"], "D": p["draw_prob"], "A": p["away_win_prob"]}
-            pick = max(probs, key=probs.get)
+            pick = {"Home Win": "H", "Draw": "D", "Away Win": "A"}[p["predicted"]]
             correct += int(pick == actual)
             home_baseline += int(actual == "H")
             exact += int(p["predicted_score"] == f"{int(row.home_goals)}-{int(row.away_goals)}")
@@ -266,7 +278,7 @@ def walk_forward(played: pd.DataFrame, min_history: int = 250) -> list[dict[str,
             p = predict(model, row.home_team, row.away_team)
             actual = _result(row.home_goals, row.away_goals)
             probs = {"H": p["home_win_prob"], "D": p["draw_prob"], "A": p["away_win_prob"]}
-            pick = max(probs, key=probs.get)
+            pick = {"Home Win": "H", "Draw": "D", "Away Win": "A"}[p["predicted"]]
             score = f"{int(row.home_goals)}-{int(row.away_goals)}"
             out.append(
                 {
