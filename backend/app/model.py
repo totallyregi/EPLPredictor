@@ -27,9 +27,10 @@ log = logging.getLogger("epl.model")
 
 REFRESH_SECONDS = 3 * 3600          # fixtures/results refresh cadence
 HALF_LIFE_DAYS = 240                # recency weighting for past matches
-PRIOR_STRENGTH = 4.0                # pseudo expected-goals pulling ratings to the prior
+PRIOR_STRENGTH = 16.0               # pseudo expected-goals pulling ratings to the prior (tuned)
 PROMOTED_PRIOR = (0.80, 1.20)       # (attack, defence weakness) for teams new to the data
-RHO = -0.10                         # Dixon-Coles low-score dependence (boosts 0-0 / 1-1)
+RHO = -0.20                         # Dixon-Coles low-score dependence (tuned; boosts 0-0 / 1-1)
+SIMULATIONS = 10000
 MAX_GOALS = 10
 CACHE_FILE = "matches.csv"
 
@@ -147,6 +148,7 @@ def score_matrix(lam_home: float, lam_away: float) -> np.ndarray:
     m[0, 1] *= 1 + lam_home * RHO
     m[1, 0] *= 1 + lam_away * RHO
     m[1, 1] *= 1 - RHO
+    m = np.clip(m, 0, None)
     return m / m.sum()
 
 
@@ -176,6 +178,7 @@ def predict(model: FittedModel, home: str, away: str) -> dict[str, Any]:
         "top_scores": [{"score": s, "prob": round(p, 4)} for p, s in top_scores],
         "both_teams_score_prob": round(float(m[1:, 1:].sum()), 4),
         "over_2_5_prob": round(float(sum(m[i, j] for i in range(MAX_GOALS + 1) for j in range(MAX_GOALS + 1) if i + j > 2)), 4),
+        "score_matrix": [[round(float(m[r, c]), 4) for c in range(6)] for r in range(6)],
         "prediction_source": "dixon_coles_poisson",
         "match_odds": {"home_win": round(home_win, 4), "draw": round(draw, 4), "away_win": round(away_win, 4)},
     }
@@ -185,30 +188,139 @@ def _result(hg: float, ag: float) -> str:
     return "H" if hg > ag else ("A" if ag > hg else "D")
 
 
-def backtest(played: pd.DataFrame, last_n: int = 100) -> dict[str, Any] | None:
+def backtest(played: pd.DataFrame, last_n: int = 300) -> dict[str, Any] | None:
     """Walk-forward check: predict each recent match using only data from before its date."""
     if len(played) < last_n + 200:
+        last_n = max(0, len(played) - 200)
+    if last_n < 50:
         return None
     test = played.tail(last_n)
-    correct = 0
-    log_loss = 0.0
-    home_baseline = 0
-    for day, group in test.groupby(test["kickoff"].dt.date):
+    correct = home_baseline = exact = 0
+    log_loss = brier = 0.0
+    records: list[dict[str, Any]] = []
+    bins = np.zeros((10, 2))  # [sum of predicted prob, hits] per 10% bucket
+    counts = np.zeros(10)
+    for _, group in test.groupby(test["kickoff"].dt.date):
         cutoff = group["kickoff"].min()
         model = fit_model(played[played["kickoff"] < cutoff], cutoff)
         for row in group.itertuples():
             p = predict(model, row.home_team, row.away_team)
             actual = _result(row.home_goals, row.away_goals)
             probs = {"H": p["home_win_prob"], "D": p["draw_prob"], "A": p["away_win_prob"]}
-            correct += int(max(probs, key=probs.get) == actual)
+            pick = max(probs, key=probs.get)
+            correct += int(pick == actual)
             home_baseline += int(actual == "H")
+            exact += int(p["predicted_score"] == f"{int(row.home_goals)}-{int(row.away_goals)}")
             log_loss -= math.log(max(probs[actual], 1e-6))
+            brier += sum((probs[k] - (k == actual)) ** 2 for k in probs)
+            for k, v in probs.items():
+                b_ = min(int(v * 10), 9)
+                bins[b_, 0] += v
+                bins[b_, 1] += int(k == actual)
+                counts[b_] += 1
+            records.append(
+                {
+                    "date": row.kickoff.strftime("%Y-%m-%d"),
+                    "home": row.home_team, "away": row.away_team,
+                    "home_short": row.home_short, "away_short": row.away_short,
+                    "home_crest": row.home_crest, "away_crest": row.away_crest,
+                    "score": f"{int(row.home_goals)}-{int(row.away_goals)}",
+                    "predicted_score": p["predicted_score"],
+                    "pick": pick, "actual": actual, "correct": pick == actual,
+                    "probs": {k: round(v, 3) for k, v in probs.items()},
+                }
+            )
+    calibration = [
+        {"bucket": f"{i * 10}-{i * 10 + 10}%", "predicted": round(float(bins[i, 0] / counts[i]), 3), "observed": round(float(bins[i, 1] / counts[i]), 3), "n": int(counts[i])}
+        for i in range(10) if counts[i] >= 8
+    ]
     return {
         "matches": last_n,
         "accuracy": round(correct / last_n, 3),
         "home_win_baseline": round(home_baseline / last_n, 3),
+        "exact_score_rate": round(exact / last_n, 3),
         "log_loss": round(log_loss / last_n, 3),
+        "uniform_log_loss": round(math.log(3), 3),
+        "brier": round(brier / last_n, 3),
+        "calibration": calibration,
+        "recent": list(reversed(records[-30:])),
     }
+
+
+def standings(df: pd.DataFrame, season: int) -> pd.DataFrame:
+    cur = df[df["season"] == season]
+    teams = sorted(set(cur["home_team"]) | set(cur["away_team"]))
+    t = pd.DataFrame(0, index=teams, columns=["P", "W", "D", "L", "GF", "GA", "Pts"])
+    fin = cur[(cur["status"] == "FINISHED") & cur["home_goals"].notna()]
+    for r in fin.itertuples():
+        hg, ag = int(r.home_goals), int(r.away_goals)
+        for team, gf, ga in ((r.home_team, hg, ag), (r.away_team, ag, hg)):
+            t.loc[team, ["P", "GF", "GA"]] += [1, gf, ga]
+            if gf > ga:
+                t.loc[team, ["W", "Pts"]] += [1, 3]
+            elif gf == ga:
+                t.loc[team, ["D", "Pts"]] += [1, 1]
+            else:
+                t.loc[team, "L"] += 1
+    t["GD"] = t["GF"] - t["GA"]
+    return t.sort_values(["Pts", "GD", "GF"], ascending=False)
+
+
+def simulate_season(df: pd.DataFrame, model: FittedModel, n: int = SIMULATIONS, seed: int = 7) -> list[dict[str, Any]]:
+    """Monte Carlo the rest of the current season from the model's scoreline distributions."""
+    season = int(df["season"].max())
+    table = standings(df, season)
+    teams = list(table.index)
+    ix = {t: i for i, t in enumerate(teams)}
+    cur = df[df["season"] == season]
+    remaining = cur[cur["status"] != "FINISHED"]
+    rng = np.random.default_rng(seed)
+    pts = np.tile(table["Pts"].to_numpy(float), (n, 1))
+    gd = np.tile(table["GD"].to_numpy(float), (n, 1))
+    gf = np.tile(table["GF"].to_numpy(float), (n, 1))
+    size = 7
+    for r in remaining.itertuples():
+        if r.home_team not in ix or r.away_team not in ix:
+            continue
+        m = score_matrix(*model.expected_goals(r.home_team, r.away_team))[:size, :size].ravel()
+        draws = rng.choice(size * size, size=n, p=m / m.sum())
+        hg, ag = draws // size, draws % size
+        h, a = ix[r.home_team], ix[r.away_team]
+        pts[:, h] += np.where(hg > ag, 3, np.where(hg == ag, 1, 0))
+        pts[:, a] += np.where(ag > hg, 3, np.where(hg == ag, 1, 0))
+        gd[:, h] += hg - ag
+        gd[:, a] += ag - hg
+        gf[:, h] += hg
+        gf[:, a] += ag
+    score = pts * 1e6 + (gd + 500) * 1e3 + gf + rng.random(pts.shape) * 0.1
+    order = np.argsort(-score, axis=1)
+    position = np.empty_like(order)
+    position[np.arange(n)[:, None], order] = np.arange(len(teams))
+    crests = {}
+    shorts = {}
+    for r in cur.itertuples():
+        crests[r.home_team], crests[r.away_team] = r.home_crest, r.away_crest
+        shorts[r.home_team], shorts[r.away_team] = r.home_short, r.away_short
+    out = []
+    for t in teams:
+        i = ix[t]
+        row = table.loc[t]
+        out.append(
+            {
+                "team": t, "short": shorts.get(t, t), "crest": crests.get(t),
+                "played": int(row.P), "won": int(row.W), "drawn": int(row.D), "lost": int(row.L),
+                "gf": int(row.GF), "ga": int(row.GA), "gd": int(row.GD), "points": int(row.Pts),
+                "projected_points": round(float(pts[:, i].mean()), 1),
+                "projected_position": round(float(position[:, i].mean()) + 1, 1),
+                "title": round(float((position[:, i] == 0).mean()), 4),
+                "top4": round(float((position[:, i] < 4).mean()), 4),
+                "relegation": round(float((position[:, i] >= len(teams) - 3).mean()), 4),
+                "attack": round(model.attack.get(t, PROMOTED_PRIOR[0]), 3),
+                "defence": round(model.defence.get(t, PROMOTED_PRIOR[1]), 3),
+            }
+        )
+    out.sort(key=lambda x: (-x["projected_points"], x["projected_position"]))
+    return out
 
 
 # --------------------------------------------------------------------------- store
@@ -220,6 +332,7 @@ class MatchStore:
         self.loaded_at: float = 0.0
         self.updated_at: datetime | None = None
         self.backtest: dict[str, Any] | None = None
+        self.projection: list[dict[str, Any]] | None = None
         self.last_error: str | None = None
 
     # -- loading
@@ -254,6 +367,11 @@ class MatchStore:
         except Exception:  # noqa: BLE001
             log.exception("Backtest failed")
             self.backtest = None
+        try:
+            self.projection = simulate_season(df, self.model) if self.model else None
+        except Exception:  # noqa: BLE001
+            log.exception("Season simulation failed")
+            self.projection = None
 
     def ensure(self, force: bool = False) -> None:
         """Make sure data is loaded and reasonably fresh. Never raises if stale data exists."""
@@ -323,7 +441,8 @@ class MatchStore:
             "home_advantage": round(self.model.mu_home / self.model.mu_away, 3) if self.model else None,
             "avg_goals_per_match": round(self.model.mu_home + self.model.mu_away, 2) if self.model else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-            "backtest": self.backtest,
+            "backtest": {k: v for k, v in (self.backtest or {}).items() if k != "recent"} or None,
+            "simulations": SIMULATIONS,
             "stale": self.last_error is not None,
         }
 

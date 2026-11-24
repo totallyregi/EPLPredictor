@@ -76,3 +76,39 @@ def upcoming_predictions(matchdays: int = Query(default=4, ge=1, le=38)) -> dict
 def model_info() -> dict[str, Any]:
     _ready()
     return store.model_info()
+
+
+@router.get("/dashboard")
+def dashboard() -> dict[str, Any]:
+    """Everything the site needs in one round trip (the free-tier server may be cold)."""
+    _ready()
+    upcoming = upcoming_predictions(matchdays=38)["predictions"]
+    form: dict[str, list[dict]] = {}
+    for p in upcoming:
+        form.setdefault(p["home"], p.pop("home_form", []))
+        form.setdefault(p["away"], p.pop("away_form", []))
+        p.pop("home_form", None)
+        p.pop("away_form", None)
+    played = store.played(store.df).sort_values("kickoff", ascending=False).head(12)
+    results = [
+        {
+            "date": r.kickoff.strftime("%Y-%m-%d"),
+            "matchday": None if r.matchday != r.matchday else int(r.matchday),
+            "home": r.home_team, "away": r.away_team,
+            "home_short": r.home_short, "away_short": r.away_short,
+            "home_crest": r.home_crest, "away_crest": r.away_crest,
+            "score": f"{int(r.home_goals)}-{int(r.away_goals)}",
+        }
+        for r in played.itertuples()
+    ]
+    table = store.projection or []
+    teams = [{"team": t["team"], "short": t["short"], "crest": t["crest"]} for t in sorted(table, key=lambda x: x["short"])]
+    return {
+        "model": store.model_info(),
+        "predictions": upcoming,
+        "table": table,
+        "teams": teams,
+        "results": results,
+        "form": form,
+        "track_record": (store.backtest or {}).get("recent", []),
+    }
