@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from ...model import predict, store
+from ...model import predict, season_analysis, store
 
 router = APIRouter()
 
@@ -112,3 +112,22 @@ def dashboard() -> dict[str, Any]:
         "form": form,
         "track_record": (store.backtest or {}).get("recent", []),
     }
+
+
+@router.get("/analysis")
+def analysis(season: int | None = None) -> dict[str, Any]:
+    """Walk-forward track record: what the model predicted before each match vs what happened."""
+    _ready()
+    records = store.history_predictions
+    seasons = sorted({r["season"] for r in records}, reverse=True)
+    if not seasons:
+        return {"seasons": [], "analysis": None}
+    chosen = season if season in seasons else seasons[0]
+    summaries = []
+    for s_ in seasons:
+        rows = [r for r in records if r["season"] == s_]
+        summaries.append({
+            "season": s_, "label": f"{s_}/{str(s_ + 1)[-2:]}", "matches": len(rows),
+            "accuracy": round(sum(r["correct"] for r in rows) / len(rows), 3),
+        })
+    return {"seasons": summaries, "analysis": season_analysis(records, chosen)}

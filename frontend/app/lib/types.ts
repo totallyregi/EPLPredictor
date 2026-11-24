@@ -63,3 +63,31 @@ export interface Dashboard {
 }
 
 export const pct = (v: number, digits = 0) => `${(v * 100).toFixed(digits)}%`;
+
+export interface PastGame {
+  match_id: number; season: number; matchday: number | null; date: string; kickoff: string;
+  home: string; away: string; home_short: string; away_short: string; home_crest?: string; away_crest?: string;
+  score: string; predicted_score: string; xg: [number, number];
+  probs: Record<Outcome, number>; pick: Outcome; actual: Outcome;
+  correct: boolean; exact: boolean; confidence: number; actual_prob: number;
+}
+
+export interface Gameweek {
+  matchday: number; matches: number; correct: number; exact: number;
+  accuracy: number; cumulative_accuracy: number; start: string; end: string; games: PastGame[];
+}
+
+export interface SeasonAnalysis {
+  season: number; label: string; matches: number; correct: number; accuracy: number;
+  exact: number; exact_rate: number; home_baseline: number; log_loss: number;
+  best_gameweek: { matchday: number; accuracy: number; correct: number; matches: number } | null;
+  worst_gameweek: { matchday: number; accuracy: number; correct: number; matches: number } | null;
+  confidence_bands: { label: string; matches: number; accuracy: number; avg_confidence: number }[];
+  outcome_matrix: Record<Outcome, Record<Outcome, number>>;
+  upsets: PastGame[]; best_calls: PastGame[]; gameweeks: Gameweek[];
+}
+
+export interface AnalysisResponse {
+  seasons: { season: number; label: string; matches: number; accuracy: number }[];
+  analysis: SeasonAnalysis | null;
+}

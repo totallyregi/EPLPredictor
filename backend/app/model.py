@@ -247,6 +247,112 @@ def backtest(played: pd.DataFrame, last_n: int = 300) -> dict[str, Any] | None:
     }
 
 
+def walk_forward(played: pd.DataFrame, min_history: int = 250) -> list[dict[str, Any]]:
+    """Predict every completed match using only matches played before that day.
+
+    Seasons are included only when enough earlier data exists to fit the model fairly.
+    """
+    played = played.sort_values("kickoff")
+    first_season = int(played["season"].min())
+    candidates = played[played["season"] > first_season]
+    out: list[dict[str, Any]] = []
+    for _, group in candidates.groupby(candidates["kickoff"].dt.date):
+        cutoff = group["kickoff"].min()
+        history = played[played["kickoff"] < cutoff]
+        if len(history) < min_history:
+            continue
+        model = fit_model(history, cutoff)
+        for row in group.itertuples():
+            p = predict(model, row.home_team, row.away_team)
+            actual = _result(row.home_goals, row.away_goals)
+            probs = {"H": p["home_win_prob"], "D": p["draw_prob"], "A": p["away_win_prob"]}
+            pick = max(probs, key=probs.get)
+            score = f"{int(row.home_goals)}-{int(row.away_goals)}"
+            out.append(
+                {
+                    "match_id": row.match_id,
+                    "season": int(row.season),
+                    "matchday": None if row.matchday != row.matchday else int(row.matchday),
+                    "date": row.kickoff.strftime("%Y-%m-%d"),
+                    "kickoff": row.kickoff.isoformat(),
+                    "home": row.home_team, "away": row.away_team,
+                    "home_short": row.home_short, "away_short": row.away_short,
+                    "home_crest": row.home_crest, "away_crest": row.away_crest,
+                    "score": score,
+                    "predicted_score": p["predicted_score"],
+                    "xg": [p["expected_home_goals"], p["expected_away_goals"]],
+                    "probs": {k: round(v, 3) for k, v in probs.items()},
+                    "pick": pick,
+                    "actual": actual,
+                    "correct": pick == actual,
+                    "exact": p["predicted_score"] == score,
+                    "confidence": round(probs[pick], 3),
+                    "actual_prob": round(probs[actual], 3),
+                }
+            )
+    return out
+
+
+def season_analysis(records: list[dict[str, Any]], season: int) -> dict[str, Any]:
+    rows = [r for r in records if r["season"] == season]
+    if not rows:
+        return {"season": season, "matches": 0, "gameweeks": []}
+    n = len(rows)
+    correct = sum(r["correct"] for r in rows)
+    exact = sum(r["exact"] for r in rows)
+    home_base = sum(r["actual"] == "H" for r in rows)
+
+    gameweeks = []
+    cum_correct = cum_n = 0
+    for md in sorted({r["matchday"] for r in rows if r["matchday"] is not None}):
+        g = sorted([r for r in rows if r["matchday"] == md], key=lambda r: r["kickoff"])
+        c = sum(r["correct"] for r in g)
+        cum_correct += c
+        cum_n += len(g)
+        gameweeks.append(
+            {
+                "matchday": md,
+                "matches": len(g),
+                "correct": c,
+                "exact": sum(r["exact"] for r in g),
+                "accuracy": round(c / len(g), 3),
+                "cumulative_accuracy": round(cum_correct / cum_n, 3),
+                "start": g[0]["date"], "end": g[-1]["date"],
+                "games": g,
+            }
+        )
+
+    bands = []
+    for lo, hi, label in ((0, 0.4, "Under 40%"), (0.4, 0.5, "40–50%"), (0.5, 0.6, "50–60%"), (0.6, 1.01, "60%+")):
+        b = [r for r in rows if lo <= r["confidence"] < hi]
+        if b:
+            bands.append({"label": label, "matches": len(b), "accuracy": round(sum(r["correct"] for r in b) / len(b), 3), "avg_confidence": round(sum(r["confidence"] for r in b) / len(b), 3)})
+
+    matrix = {p: {a: sum(1 for r in rows if r["pick"] == p and r["actual"] == a) for a in "HDA"} for p in "HDA"}
+    upsets = sorted(rows, key=lambda r: r["actual_prob"])[:5]
+    best = sorted([r for r in rows if r["correct"]], key=lambda r: -r["confidence"])[:5]
+    best_gw = max(gameweeks, key=lambda g: (g["accuracy"], g["matches"])) if gameweeks else None
+    worst_gw = min(gameweeks, key=lambda g: (g["accuracy"], -g["matches"])) if gameweeks else None
+    return {
+        "season": season,
+        "label": f"{season}/{str(season + 1)[-2:]}",
+        "matches": n,
+        "correct": correct,
+        "accuracy": round(correct / n, 3),
+        "exact": exact,
+        "exact_rate": round(exact / n, 3),
+        "home_baseline": round(home_base / n, 3),
+        "log_loss": round(sum(-math.log(max(r["actual_prob"], 1e-6)) for r in rows) / n, 3),
+        "best_gameweek": {k: best_gw[k] for k in ("matchday", "accuracy", "correct", "matches")} if best_gw else None,
+        "worst_gameweek": {k: worst_gw[k] for k in ("matchday", "accuracy", "correct", "matches")} if worst_gw else None,
+        "confidence_bands": bands,
+        "outcome_matrix": matrix,
+        "upsets": upsets,
+        "best_calls": best,
+        "gameweeks": gameweeks,
+    }
+
+
 def standings(df: pd.DataFrame, season: int) -> pd.DataFrame:
     cur = df[df["season"] == season]
     teams = sorted(set(cur["home_team"]) | set(cur["away_team"]))
@@ -333,6 +439,7 @@ class MatchStore:
         self.updated_at: datetime | None = None
         self.backtest: dict[str, Any] | None = None
         self.projection: list[dict[str, Any]] | None = None
+        self.history_predictions: list[dict[str, Any]] = []
         self.last_error: str | None = None
 
     # -- loading
@@ -367,6 +474,11 @@ class MatchStore:
         except Exception:  # noqa: BLE001
             log.exception("Backtest failed")
             self.backtest = None
+        try:
+            self.history_predictions = walk_forward(played)
+        except Exception:  # noqa: BLE001
+            log.exception("Walk-forward history failed")
+            self.history_predictions = []
         try:
             self.projection = simulate_season(df, self.model) if self.model else None
         except Exception:  # noqa: BLE001

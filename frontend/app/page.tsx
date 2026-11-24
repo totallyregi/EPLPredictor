@@ -8,10 +8,12 @@ import Hero, { pickFeatured } from './components/Hero';
 import Insights from './components/Insights';
 import Predictor from './components/Predictor';
 import TableView from './components/TableView';
+import TrackRecord from './components/TrackRecord';
 import type { Dashboard } from './lib/types';
 
 const TABS = [
   { id: 'fixtures', label: 'Fixtures', icon: 'M4 6h16M4 12h16M4 18h10' },
+  { id: 'record', label: 'Track record', icon: 'M5 12l4 4L19 6' },
   { id: 'table', label: 'Table', icon: 'M4 5h16v14H4zM4 10h16M10 5v14' },
   { id: 'predictor', label: 'Predictor', icon: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm0 0v18M3 12h18' },
   { id: 'insights', label: 'Insights', icon: 'M5 19V9m7 10V5m7 14v-7' },
@@ -116,6 +118,7 @@ export default function Home() {
               <AnimatePresence mode="wait">
                 <motion.section key={tab} initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }} transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}>
                   {tab === 'fixtures' && <Fixtures predictions={data.predictions} form={data.form} focusId={focusId} />}
+                  {tab === 'record' && <TrackRecord />}
                   {tab === 'table' && <TableView table={data.table} sims={data.model.simulations} />}
                   {tab === 'predictor' && <Predictor teams={data.teams} />}
                   {tab === 'insights' && <Insights model={data.model} table={data.table} track={data.track_record} results={data.results} />}
