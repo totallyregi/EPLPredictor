@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api.routes import admin, fixtures, history, predictions
 from .config import ensure_data_directories, settings
+from .model import store
 
 
 def create_app() -> FastAPI:
@@ -19,9 +20,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.on_event("startup")
+    def warm_up() -> None:
+        # Load match data in the background so the first visitor is not kept waiting.
+        store.warm_up_async()
+
     @app.get("/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
+    def health() -> dict[str, object]:
+        return {"status": "ok", "data_loaded": store.df is not None}
 
     app.include_router(fixtures.router, prefix="/api", tags=["fixtures"])
     app.include_router(predictions.router, prefix="/api", tags=["predictions"])

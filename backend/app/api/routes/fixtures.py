@@ -1,74 +1,40 @@
-"""Fixtures endpoint."""
+"""Fixture endpoints (served from the cached season data)."""
 
 from __future__ import annotations
 
-from datetime import date
+from fastapi import APIRouter, HTTPException
 
-from fastapi import APIRouter
-
-from ...data.football_data_client import FootballDataClient
+from ...model import store
 
 router = APIRouter()
 
 
-def _season_window_today_to_end() -> tuple[date, date]:
-    """
-    Return the date window from today to the end of the current EPL season.
-    EPL seasons typically end around May; we use June 30 as a safe boundary.
-    """
-    today = date.today()
-    season_end_year = today.year + 1 if today.month >= 8 else today.year
-    season_end = date(season_end_year, 6, 30)
-    return today, season_end
-
-
-def _fixtures_from_live_api() -> list[dict]:
-    """Fetch fixtures from live Football-Data API for current season remainder."""
+def _fixtures() -> list[dict]:
     try:
-        client = FootballDataClient()
-    except ValueError:
-        return []
-
-    start_date, end_date = _season_window_today_to_end()
-    matches = client.fetch_matches(start_date, end_date, competition="PL")
-    fixtures: list[dict] = []
-    for match in matches:
-        status = match.get("status")
-        if status not in {"TIMED", "SCHEDULED"}:
-            continue
-
-        utc_date = match.get("utcDate")
-        home_team = match.get("homeTeam") or {}
-        away_team = match.get("awayTeam") or {}
-        if not utc_date or not home_team.get("name") or not away_team.get("name"):
-            continue
-
-        fixtures.append(
-            {
-                "date": utc_date[:10],
-                "home": home_team.get("name"),
-                "away": away_team.get("name"),
-                "home_crest": home_team.get("crest"),
-                "away_crest": away_team.get("crest"),
-                "status": status,
-            }
-        )
-
-    fixtures.sort(key=lambda row: row["date"])
-    return fixtures
+        store.ensure()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"Match data unavailable: {exc}") from exc
+    return [
+        {
+            "date": r.kickoff.strftime("%Y-%m-%d"),
+            "kickoff": r.kickoff.isoformat(),
+            "matchday": None if r.matchday != r.matchday else int(r.matchday),
+            "home": r.home_team,
+            "away": r.away_team,
+            "home_crest": r.home_crest,
+            "away_crest": r.away_crest,
+            "status": r.status,
+        }
+        for r in store.upcoming().itertuples()
+    ]
 
 
 @router.get("/fixtures/week")
 def get_week_fixtures() -> dict[str, list[dict]]:
-    """
-    Backward-compatible route name.
-    Returns fixtures from today through the end of the current season.
-    """
-    return {"fixtures": _fixtures_from_live_api()}
+    """Backward-compatible name: fixtures from today to the end of the season."""
+    return {"fixtures": _fixtures()}
 
 
 @router.get("/fixtures/season")
 def get_season_fixtures() -> dict[str, list[dict]]:
-    """Alias endpoint for explicit season fixtures access."""
-    return get_week_fixtures()
-
+    return {"fixtures": _fixtures()}

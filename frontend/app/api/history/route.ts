@@ -1,29 +1,16 @@
 import { NextResponse } from 'next/server';
+import { backendFetch } from '../_backend';
+
+export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
 export async function GET(request: Request) {
+  const limit = new URL(request.url).searchParams.get('limit') || '10';
   try {
-    const { searchParams } = new URL(request.url);
-    const years = searchParams.get('years') || '5';
-    const backendBaseUrl = process.env.BACKEND_API_URL || 'http://localhost:8000';
-
-    const response = await fetch(`${backendBaseUrl}/api/history?years=${years}`, {
-      cache: 'no-store'
-    });
-
-    if (!response.ok) {
-      return NextResponse.json(
-        { error: 'Failed to fetch historical data' },
-        { status: response.status }
-      );
-    }
-
-    const payload = await response.json();
-    return NextResponse.json(payload);
-  } catch (error) {
-    return NextResponse.json(
-      { error: 'History API request failed' },
-      { status: 500 }
-    );
+    const res = await backendFetch(`/api/history?limit=${encodeURIComponent(limit)}`);
+    if (!res.ok) return NextResponse.json({ history: [], error: 'History unavailable' }, { status: 503 });
+    return NextResponse.json(await res.json(), { headers: { 'Cache-Control': 's-maxage=300, stale-while-revalidate=600' } });
+  } catch {
+    return NextResponse.json({ history: [], error: 'History unavailable' }, { status: 503 });
   }
 }
-

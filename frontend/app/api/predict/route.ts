@@ -1,41 +1,24 @@
 import { NextResponse } from 'next/server';
+import { backendFetch } from '../_backend';
+
+export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
+  const body = await request.json().catch(() => ({}));
+  if (!body?.home_team || !body?.away_team) {
+    return NextResponse.json({ error: 'home_team and away_team are required' }, { status: 400 });
+  }
   try {
-    const body = await request.json();
-    const { home_team, away_team, date } = body;
-
-    if (!home_team || !away_team) {
-      return NextResponse.json(
-        { error: 'home_team and away_team are required' },
-        { status: 400 }
-      );
-    }
-
-    const backendBaseUrl = process.env.BACKEND_API_URL || 'http://localhost:8000';
-    const response = await fetch(`${backendBaseUrl}/api/predict`, {
+    const res = await backendFetch('/api/predict', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ home_team, away_team, date })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     });
-
-    if (!response.ok) {
-      const errorPayload = await response.json().catch(() => null);
-      return NextResponse.json(
-        { error: errorPayload?.detail || 'Prediction backend request failed' },
-        { status: response.status }
-      );
-    }
-
-    const payload = await response.json();
+    const payload = await res.json().catch(() => null);
+    if (!res.ok) return NextResponse.json({ error: payload?.detail || 'Prediction failed' }, { status: res.status });
     return NextResponse.json(payload);
-  } catch (error) {
-    return NextResponse.json(
-      { error: 'Failed to generate prediction' },
-      { status: 500 }
-    );
+  } catch {
+    return NextResponse.json({ error: 'Prediction server unavailable' }, { status: 503 });
   }
 }
-

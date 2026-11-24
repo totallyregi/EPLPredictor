@@ -1,26 +1,15 @@
 import { NextResponse } from 'next/server';
+import { backendFetch } from '../_backend';
+
+export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
 export async function GET() {
   try {
-    const backendBaseUrl = process.env.BACKEND_API_URL || 'http://localhost:8000';
-    const response = await fetch(`${backendBaseUrl}/api/fixtures/week`, {
-      cache: 'no-store'
-    });
-
-    if (!response.ok) {
-      return NextResponse.json(
-        { error: 'Failed to fetch fixtures from backend' },
-        { status: response.status }
-      );
-    }
-
-    const payload = await response.json();
-    return NextResponse.json(payload);
-  } catch (error) {
-    return NextResponse.json(
-      { error: 'Fixtures API request failed' },
-      { status: 500 }
-    );
+    const res = await backendFetch('/api/fixtures/week');
+    if (!res.ok) return NextResponse.json({ error: 'Failed to fetch fixtures from backend' }, { status: res.status });
+    return NextResponse.json(await res.json());
+  } catch {
+    return NextResponse.json({ error: 'Fixtures API request failed' }, { status: 503 });
   }
 }
-

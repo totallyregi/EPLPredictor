@@ -6,7 +6,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from ...config import settings
-from ....scripts.fetch_process_epl_data import run_pipeline
+from ...model import store
 
 router = APIRouter()
 
@@ -28,9 +28,9 @@ def refresh_data(payload: RefreshRequest, x_refresh_token: str | None = Header(d
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     try:
-        result = run_pipeline(seasons=payload.seasons, force_refresh=payload.force_refresh)
+        store.ensure(force=True)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Refresh failed: {exc}") from exc
 
-    return {"ok": True, "result": result}
+    return {"ok": True, "model": store.model_info()}
 

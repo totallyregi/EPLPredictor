@@ -1,0 +1,331 @@
+"""Match data store and Dixon-Coles adjusted Poisson model.
+
+The deployed backend runs on an ephemeral disk, so data must never depend on a
+manually-run pipeline. ``MatchStore`` fetches the last few EPL seasons from
+Football-Data.org on demand, caches them in memory and on disk, and refreshes
+them every few hours. The model is refit whenever the data changes.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import threading
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from .config import settings
+from .data.football_data_client import FootballDataClient
+from .data.storage import processed_file_path
+
+log = logging.getLogger("epl.model")
+
+REFRESH_SECONDS = 3 * 3600          # fixtures/results refresh cadence
+HALF_LIFE_DAYS = 240                # recency weighting for past matches
+PRIOR_STRENGTH = 4.0                # pseudo expected-goals pulling ratings to the prior
+PROMOTED_PRIOR = (0.80, 1.20)       # (attack, defence weakness) for teams new to the data
+RHO = -0.10                         # Dixon-Coles low-score dependence (boosts 0-0 / 1-1)
+MAX_GOALS = 10
+CACHE_FILE = "matches.csv"
+
+UPCOMING = {"SCHEDULED", "TIMED"}
+
+
+# --------------------------------------------------------------------------- data
+def _normalize(raw_matches: list[dict]) -> pd.DataFrame:
+    rows = []
+    for m in raw_matches:
+        home, away = m.get("homeTeam") or {}, m.get("awayTeam") or {}
+        full_time = (m.get("score") or {}).get("fullTime") or {}
+        season = ((m.get("season") or {}).get("startDate") or "")[:4]
+        if not m.get("utcDate") or not home.get("name") or not away.get("name"):
+            continue
+        rows.append(
+            {
+                "match_id": m.get("id"),
+                "kickoff": m["utcDate"],
+                "season": int(season) if season.isdigit() else None,
+                "matchday": m.get("matchday"),
+                "status": m.get("status"),
+                "home_team": home.get("name"),
+                "away_team": away.get("name"),
+                "home_short": home.get("shortName") or home.get("name"),
+                "away_short": away.get("shortName") or away.get("name"),
+                "home_crest": home.get("crest"),
+                "away_crest": away.get("crest"),
+                "home_goals": full_time.get("home"),
+                "away_goals": full_time.get("away"),
+            }
+        )
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    df["kickoff"] = pd.to_datetime(df["kickoff"], utc=True, errors="coerce")
+    df["home_goals"] = pd.to_numeric(df["home_goals"], errors="coerce")
+    df["away_goals"] = pd.to_numeric(df["away_goals"], errors="coerce")
+    return df.dropna(subset=["kickoff"]).sort_values("kickoff").reset_index(drop=True)
+
+
+# --------------------------------------------------------------------------- model
+@dataclass
+class FittedModel:
+    attack: dict[str, float]
+    defence: dict[str, float]
+    mu_home: float
+    mu_away: float
+    priors: dict[str, tuple[float, float]] = field(default_factory=dict)
+
+    def expected_goals(self, home: str, away: str) -> tuple[float, float]:
+        ha, hd = self.attack.get(home, PROMOTED_PRIOR[0]), self.defence.get(home, PROMOTED_PRIOR[1])
+        aa, ad = self.attack.get(away, PROMOTED_PRIOR[0]), self.defence.get(away, PROMOTED_PRIOR[1])
+        return max(0.15, self.mu_home * ha * ad), max(0.15, self.mu_away * aa * hd)
+
+
+def fit_model(played: pd.DataFrame, as_of: pd.Timestamp) -> FittedModel:
+    """Weighted attack/defence ratings with opponent adjustment and Bayesian shrinkage."""
+    age_days = (as_of - played["kickoff"]).dt.total_seconds() / 86400
+    w = np.power(0.5, age_days.clip(lower=0) / HALF_LIFE_DAYS).to_numpy()
+    hg, ag = played["home_goals"].to_numpy(float), played["away_goals"].to_numpy(float)
+    home, away = played["home_team"].to_numpy(), played["away_team"].to_numpy()
+
+    mu_home = float((w * hg).sum() / w.sum())
+    mu_away = float((w * ag).sum() / w.sum())
+
+    teams = sorted(set(home) | set(away))
+    idx = {t: i for i, t in enumerate(teams)}
+    hi = np.array([idx[t] for t in home])
+    ai = np.array([idx[t] for t in away])
+
+    # Teams absent from the previous season in the data are treated as promoted.
+    latest = int(played["season"].max())
+    prev_teams = set(played.loc[played["season"] == latest - 1, ["home_team", "away_team"]].to_numpy().ravel())
+    has_history = played["season"].nunique() > 1
+    prior_att = np.ones(len(teams))
+    prior_def = np.ones(len(teams))
+    priors: dict[str, tuple[float, float]] = {}
+    for t, i in idx.items():
+        if has_history and t not in prev_teams:
+            prior_att[i], prior_def[i] = PROMOTED_PRIOR
+        priors[t] = (float(prior_att[i]), float(prior_def[i]))
+
+    att = prior_att.copy()
+    dfn = prior_def.copy()
+    for _ in range(25):
+        # Attack: goals scored vs. goals expected from opponent defence.
+        g_for = np.bincount(hi, w * hg, len(teams)) + np.bincount(ai, w * ag, len(teams))
+        e_for = np.bincount(hi, w * mu_home * dfn[ai], len(teams)) + np.bincount(ai, w * mu_away * dfn[hi], len(teams))
+        att = (g_for + PRIOR_STRENGTH * prior_att) / (e_for + PRIOR_STRENGTH)
+        att /= np.exp(np.mean(np.log(att)))
+        # Defence: goals conceded vs. goals expected from opponent attack.
+        g_ag = np.bincount(hi, w * ag, len(teams)) + np.bincount(ai, w * hg, len(teams))
+        e_ag = np.bincount(hi, w * mu_away * att[ai], len(teams)) + np.bincount(ai, w * mu_home * att[hi], len(teams))
+        dfn = (g_ag + PRIOR_STRENGTH * prior_def) / (e_ag + PRIOR_STRENGTH)
+        dfn /= np.exp(np.mean(np.log(dfn)))
+
+    return FittedModel(
+        attack={t: float(att[i]) for t, i in idx.items()},
+        defence={t: float(dfn[i]) for t, i in idx.items()},
+        mu_home=mu_home,
+        mu_away=mu_away,
+        priors=priors,
+    )
+
+
+def score_matrix(lam_home: float, lam_away: float) -> np.ndarray:
+    goals = np.arange(MAX_GOALS + 1)
+    fact = np.array([math.factorial(int(k)) for k in goals], dtype=float)
+    ph = np.exp(-lam_home) * lam_home**goals / fact
+    pa = np.exp(-lam_away) * lam_away**goals / fact
+    m = np.outer(ph, pa)
+    # Dixon-Coles correction for low-scoring outcomes.
+    m[0, 0] *= 1 - lam_home * lam_away * RHO
+    m[0, 1] *= 1 + lam_home * RHO
+    m[1, 0] *= 1 + lam_away * RHO
+    m[1, 1] *= 1 - RHO
+    return m / m.sum()
+
+
+def predict(model: FittedModel, home: str, away: str) -> dict[str, Any]:
+    lam_h, lam_a = model.expected_goals(home, away)
+    m = score_matrix(lam_h, lam_a)
+    home_win = float(np.tril(m, -1).sum())
+    draw = float(np.trace(m))
+    away_win = float(np.triu(m, 1).sum())
+    probs = {"Home Win": home_win, "Draw": draw, "Away Win": away_win}
+    predicted = max(probs, key=probs.get)
+    # Most likely scoreline *consistent with* the predicted outcome (plain argmax is nearly always 1-1).
+    i, j = np.indices(m.shape)
+    region = {"Home Win": i > j, "Draw": i == j, "Away Win": i < j}[predicted]
+    h, a = np.unravel_index(np.argmax(np.where(region, m, -1)), m.shape)
+    top_scores = sorted(
+        ((float(m[i, j]), f"{i}-{j}") for i in range(6) for j in range(6)), reverse=True
+    )[:3]
+    return {
+        "home_win_prob": round(home_win, 4),
+        "draw_prob": round(draw, 4),
+        "away_win_prob": round(away_win, 4),
+        "expected_home_goals": round(lam_h, 2),
+        "expected_away_goals": round(lam_a, 2),
+        "predicted": predicted,
+        "predicted_score": f"{h}-{a}",
+        "top_scores": [{"score": s, "prob": round(p, 4)} for p, s in top_scores],
+        "both_teams_score_prob": round(float(m[1:, 1:].sum()), 4),
+        "over_2_5_prob": round(float(sum(m[i, j] for i in range(MAX_GOALS + 1) for j in range(MAX_GOALS + 1) if i + j > 2)), 4),
+        "prediction_source": "dixon_coles_poisson",
+        "match_odds": {"home_win": round(home_win, 4), "draw": round(draw, 4), "away_win": round(away_win, 4)},
+    }
+
+
+def _result(hg: float, ag: float) -> str:
+    return "H" if hg > ag else ("A" if ag > hg else "D")
+
+
+def backtest(played: pd.DataFrame, last_n: int = 100) -> dict[str, Any] | None:
+    """Walk-forward check: predict each recent match using only data from before its date."""
+    if len(played) < last_n + 200:
+        return None
+    test = played.tail(last_n)
+    correct = 0
+    log_loss = 0.0
+    home_baseline = 0
+    for day, group in test.groupby(test["kickoff"].dt.date):
+        cutoff = group["kickoff"].min()
+        model = fit_model(played[played["kickoff"] < cutoff], cutoff)
+        for row in group.itertuples():
+            p = predict(model, row.home_team, row.away_team)
+            actual = _result(row.home_goals, row.away_goals)
+            probs = {"H": p["home_win_prob"], "D": p["draw_prob"], "A": p["away_win_prob"]}
+            correct += int(max(probs, key=probs.get) == actual)
+            home_baseline += int(actual == "H")
+            log_loss -= math.log(max(probs[actual], 1e-6))
+    return {
+        "matches": last_n,
+        "accuracy": round(correct / last_n, 3),
+        "home_win_baseline": round(home_baseline / last_n, 3),
+        "log_loss": round(log_loss / last_n, 3),
+    }
+
+
+# --------------------------------------------------------------------------- store
+class MatchStore:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.df: pd.DataFrame | None = None
+        self.model: FittedModel | None = None
+        self.loaded_at: float = 0.0
+        self.updated_at: datetime | None = None
+        self.backtest: dict[str, Any] | None = None
+        self.last_error: str | None = None
+
+    # -- loading
+    def _load_disk(self) -> None:
+        path = processed_file_path(CACHE_FILE)
+        if not path.exists():
+            return
+        df = pd.read_csv(path)
+        df["kickoff"] = pd.to_datetime(df["kickoff"], utc=True, errors="coerce")
+        self._set(df, datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc))
+        self.loaded_at = path.stat().st_mtime
+
+    def _fetch(self) -> None:
+        client = FootballDataClient()
+        raw = client.fetch_last_n_years(years=settings.seasons_to_fetch)
+        df = _normalize(raw)
+        if df.empty:
+            raise RuntimeError("Football-Data returned no matches")
+        df.to_csv(processed_file_path(CACHE_FILE), index=False)
+        self._set(df, datetime.now(timezone.utc))
+        self.loaded_at = time.time()
+        self.last_error = None
+        log.info("Loaded %d matches from Football-Data", len(df))
+
+    def _set(self, df: pd.DataFrame, updated_at: datetime) -> None:
+        played = self.played(df)
+        self.df = df
+        self.updated_at = updated_at
+        self.model = fit_model(played, pd.Timestamp.now(tz="UTC")) if not played.empty else None
+        try:
+            self.backtest = backtest(played)
+        except Exception:  # noqa: BLE001
+            log.exception("Backtest failed")
+            self.backtest = None
+
+    def ensure(self, force: bool = False) -> None:
+        """Make sure data is loaded and reasonably fresh. Never raises if stale data exists."""
+        if not force and self.df is not None and time.time() - self.loaded_at < REFRESH_SECONDS:
+            return
+        with self._lock:
+            if not force and self.df is not None and time.time() - self.loaded_at < REFRESH_SECONDS:
+                return
+            if self.df is None and not force:
+                try:
+                    self._load_disk()
+                except Exception:  # noqa: BLE001
+                    log.exception("Could not read cached matches")
+                if self.df is not None and time.time() - self.loaded_at < REFRESH_SECONDS:
+                    return
+            try:
+                self._fetch()
+            except Exception as exc:  # noqa: BLE001
+                self.last_error = str(exc)
+                log.exception("Refreshing match data failed")
+                if self.df is None:
+                    raise
+
+    def warm_up_async(self) -> None:
+        threading.Thread(target=lambda: self._safe_ensure(), daemon=True).start()
+
+    def _safe_ensure(self) -> None:
+        try:
+            self.ensure()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # -- views
+    @staticmethod
+    def played(df: pd.DataFrame) -> pd.DataFrame:
+        return df[(df["status"] == "FINISHED") & df["home_goals"].notna() & df["away_goals"].notna()].copy()
+
+    def form(self, team: str, n: int = 5) -> list[dict[str, Any]]:
+        played = self.played(self.df)
+        rows = played[(played["home_team"] == team) | (played["away_team"] == team)].tail(n)
+        out = []
+        for r in rows.itertuples():
+            is_home = r.home_team == team
+            gf, ga = (r.home_goals, r.away_goals) if is_home else (r.away_goals, r.home_goals)
+            out.append(
+                {
+                    "result": "W" if gf > ga else ("L" if gf < ga else "D"),
+                    "score": f"{int(gf)}-{int(ga)}",
+                    "opponent": r.away_short if is_home else r.home_short,
+                    "home": bool(is_home),
+                    "date": r.kickoff.strftime("%Y-%m-%d"),
+                }
+            )
+        return list(reversed(out))  # most recent first
+
+    def upcoming(self) -> pd.DataFrame:
+        now = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=3)
+        df = self.df
+        return df[df["status"].isin(UPCOMING) & (df["kickoff"] >= now)].sort_values("kickoff")
+
+    def model_info(self) -> dict[str, Any]:
+        played = self.played(self.df)
+        return {
+            "name": "Dixon-Coles adjusted Poisson",
+            "trained_on_matches": int(len(played)),
+            "seasons": sorted(int(s) for s in played["season"].dropna().unique()),
+            "home_advantage": round(self.model.mu_home / self.model.mu_away, 3) if self.model else None,
+            "avg_goals_per_match": round(self.model.mu_home + self.model.mu_away, 2) if self.model else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "backtest": self.backtest,
+            "stale": self.last_error is not None,
+        }
+
+
+store = MatchStore()

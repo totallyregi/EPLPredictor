@@ -2,6 +2,14 @@
 
 A machine learning system for predicting Premier League match outcomes, featuring web scraping, feature engineering, model training, and a web interface.
 
+## How the live app works (2026 rewrite)
+
+- **No manual pipeline needed.** `backend/app/model.py` (`MatchStore`) fetches the last `EPL_SEASONS_TO_FETCH` seasons from Football-Data.org on startup, caches them in memory and on disk, and refreshes every 3 hours. Render's ephemeral disk is fine.
+- **Model:** Dixon-Coles adjusted Poisson. Opponent-adjusted attack/defence ratings, 240-day recency half-life, Bayesian shrinkage (promoted teams start from a weaker prior), home advantage estimated from data.
+- **Backtest:** walk-forward on the last 100 matches, exposed at `GET /api/model`.
+- **Endpoints:** `GET /api/predictions?matchdays=4` (all upcoming predictions + team form + model info in one call), `POST /api/predict`, `GET /api/history?limit=10`, `GET /api/fixtures/week`, `POST /api/admin/refresh-data` (needs `X-Refresh-Token`).
+- **Frontend** API routes are `force-dynamic` (previously Next.js froze them at build time) and show a "waking up" state with auto-retry while Render's free instance boots, instead of fabricated fallback numbers.
+
 ## Features
 
 - **Football-Data.org Pipeline**: Pull and process 5 years of EPL match data from API

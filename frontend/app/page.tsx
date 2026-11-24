@@ -1,181 +1,217 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import MatchCard from './components/MatchCard';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import MatchCard, { type Prediction } from './components/MatchCard';
+import TeamBadge from './components/TeamBadge';
 
-interface Fixture {
-  date: string;
-  home: string;
-  away: string;
-  home_crest?: string;
-  away_crest?: string;
-  time?: string;
-  home_win_prob?: number;
-  draw_prob?: number;
-  away_win_prob?: number;
-  predicted?: string;
-  predicted_score?: string;
-  expected_home_goals?: number;
-  expected_away_goals?: number;
-  prediction_source?: string;
-  match_odds?: {
-    home_win: number;
-    draw: number;
-    away_win: number;
-  };
+interface ModelInfo {
+  name: string;
+  trained_on_matches: number;
+  seasons: number[];
+  home_advantage: number | null;
+  avg_goals_per_match: number | null;
+  updated_at: string | null;
+  backtest: { matches: number; accuracy: number; home_win_baseline: number; log_loss: number } | null;
 }
 
-interface HistoryMatch {
+interface Result {
   date: string;
-  season: string;
+  matchday: number | null;
   home_team: string;
   away_team: string;
+  home_crest?: string;
+  away_crest?: string;
   home_goals: number;
   away_goals: number;
-  result: string;
+}
+
+const MAX_ATTEMPTS = 4;
+
+function timeAgo(iso: string | null) {
+  if (!iso) return '—';
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  return hours < 24 ? `${hours} h ago` : `${Math.round(hours / 24)} d ago`;
 }
 
 export default function Home() {
-  const [fixtures, setFixtures] = useState<Fixture[]>([]);
-  const [history, setHistory] = useState<HistoryMatch[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [predictions, setPredictions] = useState<Prediction[]>([]);
+  const [model, setModel] = useState<ModelInfo | null>(null);
+  const [results, setResults] = useState<Result[]>([]);
+  const [matchday, setMatchday] = useState<number | null>(null);
+  const [status, setStatus] = useState<'loading' | 'waking' | 'ready' | 'error'>('loading');
+  const [message, setMessage] = useState('');
+  const [attempt, setAttempt] = useState(0);
 
-  useEffect(() => {
-    async function loadDashboard() {
-      try {
-        setLoading(true);
-        setError(null);
-
-        const [predictionsResponse, historyResponse] = await Promise.all([
-          fetch('/api/predictions', { cache: 'no-store' }),
-          fetch('/api/history?years=5', { cache: 'no-store' })
-        ]);
-
-        if (!predictionsResponse.ok) {
-          throw new Error('Failed to load predictions');
-        }
-
-        const predictionData = await predictionsResponse.json();
-        const historyData = historyResponse.ok ? await historyResponse.json() : { history: [] };
-
-        const sortedFixtures = (predictionData.predictions || []).sort(
-          (a: Fixture, b: Fixture) => new Date(a.date).getTime() - new Date(b.date).getTime()
-        );
-
-        setFixtures(sortedFixtures);
-        setHistory((historyData.history || []).slice(0, 12));
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'An error occurred');
-      } finally {
-        setLoading(false);
+  const load = useCallback(async (n = 1) => {
+    setAttempt(n);
+    setStatus(n === 1 ? 'loading' : 'waking');
+    // If the free-tier server is asleep, the first request can take ~50s.
+    const slow = setTimeout(() => setStatus('waking'), 4000);
+    try {
+      const res = await fetch('/api/predictions?matchdays=4', { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok) throw Object.assign(new Error(data?.error || 'Prediction service unavailable'), { waking: data?.waking });
+      const list: Prediction[] = data.predictions || [];
+      setPredictions(list);
+      setModel(data.model || null);
+      setMatchday(list.find((p) => p.matchday != null)?.matchday ?? null);
+      setStatus('ready');
+      fetch('/api/history?limit=10', { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : { history: [] }))
+        .then((h) => setResults(h.history || []))
+        .catch(() => {});
+    } catch (err) {
+      const e = err as Error & { waking?: boolean };
+      setMessage(e.message);
+      if (n < MAX_ATTEMPTS) {
+        setStatus('waking');
+        setTimeout(() => load(n + 1), 5000);
+      } else {
+        setStatus('error');
       }
+    } finally {
+      clearTimeout(slow);
     }
-
-    loadDashboard();
   }, []);
 
-  const predictedHomeWins = fixtures.filter((fixture) => fixture.predicted === 'Home Win').length;
-  const predictedDraws = fixtures.filter((fixture) => fixture.predicted === 'Draw').length;
-  const predictedAwayWins = fixtures.filter((fixture) => fixture.predicted === 'Away Win').length;
+  useEffect(() => { load(); }, [load]);
+
+  const matchdays = useMemo(
+    () => Array.from(new Set(predictions.map((p) => p.matchday).filter((m): m is number => m != null))).sort((a, b) => a - b),
+    [predictions]
+  );
+
+  const visible = useMemo(
+    () => (matchday == null ? predictions : predictions.filter((p) => p.matchday === matchday)),
+    [predictions, matchday]
+  );
+
+  const byDay = useMemo(() => {
+    const groups = new Map<string, Prediction[]>();
+    visible.forEach((p) => {
+      const key = new Date(p.kickoff || p.date).toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' });
+      groups.set(key, [...(groups.get(key) || []), p]);
+    });
+    return Array.from(groups.entries());
+  }, [visible]);
+
+  const homeAdv = model?.home_advantage ? Math.round((model.home_advantage - 1) * 100) : null;
 
   return (
     <main className="page-shell">
-      <section className="hero">
-        <div>
-          <p className="hero-kicker">EPL Forecast Desk</p>
-          <h1>Premier League Match Predictor</h1>
-          <p className="hero-subtitle">Professional match forecasts with winner probabilities and expected scorelines.</p>
-        </div>
-        <button
-          type="button"
-          className="refresh-button"
-          onClick={() => window.location.reload()}
-        >
-          Refresh Data
-        </button>
-      </section>
+      <header className="hero">
+        <p className="hero-kicker"><span className="live-dot" /> Premier League · {model?.seasons?.length ? `${model.seasons[model.seasons.length - 1]}/${String(model.seasons[model.seasons.length - 1] + 1).slice(-2)}` : 'Live'}</p>
+        <h1>EPL Match Predictor</h1>
+        <p className="hero-subtitle">
+          Win probabilities and likeliest scorelines for every upcoming fixture, from a Dixon-Coles Poisson model
+          retrained on live results.
+        </p>
+      </header>
 
-      <section className="summary-grid">
-        <div className="summary-card">
-          <p className="summary-label">Upcoming Fixtures</p>
-          <p className="summary-value">{fixtures.length}</p>
+      <section className="stats">
+        <div className="stat">
+          <span className="stat-value">{model?.backtest ? `${Math.round(model.backtest.accuracy * 100)}%` : '—'}</span>
+          <span className="stat-label">
+            Backtest accuracy{model?.backtest ? ` on last ${model.backtest.matches} matches (home-win baseline ${Math.round(model.backtest.home_win_baseline * 100)}%)` : ''}
+          </span>
         </div>
-        <div className="summary-card">
-          <p className="summary-label">Predicted Home Wins</p>
-          <p className="summary-value">{predictedHomeWins}</p>
+        <div className="stat">
+          <span className="stat-value">{model ? model.trained_on_matches.toLocaleString() : '—'}</span>
+          <span className="stat-label">Matches in training data</span>
         </div>
-        <div className="summary-card">
-          <p className="summary-label">Predicted Draws</p>
-          <p className="summary-value">{predictedDraws}</p>
+        <div className="stat">
+          <span className="stat-value">{homeAdv != null ? `+${homeAdv}%` : '—'}</span>
+          <span className="stat-label">Home advantage (goals)</span>
         </div>
-        <div className="summary-card">
-          <p className="summary-label">Predicted Away Wins</p>
-          <p className="summary-value">{predictedAwayWins}</p>
+        <div className="stat">
+          <span className="stat-value">{timeAgo(model?.updated_at ?? null)}</span>
+          <span className="stat-label">Data last refreshed</span>
         </div>
       </section>
 
-      {loading && <div className="loading">Loading predictions...</div>}
-
-      {error && <div className="error">Error: {error}</div>}
-
-      {!loading && !error && fixtures.length === 0 && (
-        <div className="empty-state">
-          <h2>No fixtures available</h2>
-          <p>Try refreshing the dashboard or checking backend API connectivity.</p>
+      {(status === 'loading' || status === 'waking') && (
+        <div className="state-box">
+          <span className="spinner" aria-hidden="true" />
+          <div>
+            <strong>{status === 'loading' ? 'Loading predictions…' : 'Waking up the model server…'}</strong>
+            {status === 'waking' && (
+              <p>It runs on free hosting and sleeps when idle, so the first visit can take up to a minute.{attempt > 1 ? ` Retrying (${attempt}/${MAX_ATTEMPTS})…` : ''}</p>
+            )}
+          </div>
         </div>
       )}
 
-      {!loading && !error && fixtures.length > 0 && (
-        <section className="section-block">
-          <div className="section-header">
-            <h2>Season Fixture Predictions</h2>
-            <p>Winner probabilities and score projections for remaining EPL matches.</p>
+      {status === 'error' && (
+        <div className="state-box error">
+          <div>
+            <strong>Predictions are unavailable right now.</strong>
+            <p>{message}</p>
           </div>
-          {fixtures.map((fixture, index) => (
-            <MatchCard key={index} fixture={fixture} />
+          <button type="button" className="retry" onClick={() => load(1)}>Try again</button>
+        </div>
+      )}
+
+      {status === 'ready' && (
+        <section>
+          <div className="section-head">
+            <h2>Upcoming fixtures</h2>
+            {matchdays.length > 0 && (
+              <div className="tabs" role="tablist" aria-label="Matchday">
+                {matchdays.map((md) => (
+                  <button key={md} type="button" role="tab" aria-selected={md === matchday} className={md === matchday ? 'active' : ''} onClick={() => setMatchday(md)}>
+                    MD {md}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="legend">
+            <span><i className="home" /> Home win</span>
+            <span><i className="draw" /> Draw</span>
+            <span><i className="away" /> Away win</span>
+            <span className="legend-note">Tap a match for xG, likeliest scores and goal markets</span>
+          </div>
+
+          {byDay.length === 0 && <p className="muted">No upcoming fixtures found.</p>}
+          {byDay.map(([day, games]) => (
+            <div key={day} className="day-group">
+              <h3 className="day-title">{day}</h3>
+              {games.map((g) => <MatchCard key={g.match_id ?? `${g.home}-${g.away}`} fixture={g} />)}
+            </div>
           ))}
         </section>
       )}
 
-      <section className="section-block">
-        <div className="section-header">
-          <h2>Historical Matches (5 Years)</h2>
-          <p>Latest records from the training data used by the prediction service.</p>
-        </div>
-        <div className="history-table-wrap">
-          <table className="history-table">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Season</th>
-                <th>Fixture</th>
-                <th>Score</th>
-                <th>Result</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="history-empty">
-                    No historical data available yet.
-                  </td>
-                </tr>
-              )}
-              {history.map((row, index) => (
-                <tr key={`${row.date}-${row.home_team}-${index}`}>
-                  <td>{new Date(row.date).toLocaleDateString('en-GB')}</td>
-                  <td>{row.season}</td>
-                  <td>{row.home_team} vs {row.away_team}</td>
-                  <td>{row.home_goals}-{row.away_goals}</td>
-                  <td>{row.result}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      {results.length > 0 && (
+        <section>
+          <div className="section-head"><h2>Latest results</h2></div>
+          <div className="results">
+            {results.map((r, i) => (
+              <div className="result" key={`${r.date}-${r.home_team}-${i}`}>
+                <span className="result-date">{new Date(r.date).toLocaleDateString([], { day: 'numeric', month: 'short' })}</span>
+                <span className="result-team right">{r.home_team.replace(/ FC$/, '')} <TeamBadge team={r.home_team} crestUrl={r.home_crest} compact /></span>
+                <span className="result-score">{r.home_goals} – {r.away_goals}</span>
+                <span className="result-team"><TeamBadge team={r.away_team} crestUrl={r.away_crest} compact /> {r.away_team.replace(/ FC$/, '')}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <section className="method">
+        <h2>How it works</h2>
+        <p>
+          Results for the last {model?.seasons?.length ?? 4} seasons are pulled from the Football-Data.org API every few hours. Each team gets an
+          attack and defence rating, adjusted for opponent strength and weighted toward recent matches (240-day half-life).
+          Newly promoted teams start from a weaker prior until they build a record. Expected goals feed a Poisson score model
+          with a Dixon-Coles correction for low-scoring draws, giving probabilities for every scoreline from 0–0 to 10–10.
+          Accuracy is measured walk-forward: each backtested match is predicted using only data from before it was played.
+        </p>
       </section>
     </main>
   );
 }
-
